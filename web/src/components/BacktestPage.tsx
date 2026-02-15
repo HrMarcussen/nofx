@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef, type FormEvent } from 'react'
 import useSWR from 'swr'
-import { motion, AnimatePresence } from 'framer-motion'
 import { createChart, ColorType, CrosshairMode, CandlestickSeries, createSeriesMarkers, type IChartApi, type ISeriesApi, type CandlestickData, type UTCTimestamp, type SeriesMarker } from 'lightweight-charts'
 import {
   Play,
@@ -124,7 +123,8 @@ function StatCard({
         )}
         {trend && trend !== 'neutral' && (
           <span style={{ color: trendColors[trend] }}>
-            {trend === 'up' ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+            {trend === 'up' && <ArrowUpRight className="w-4 h-4" />}
+            {trend === 'down' && <ArrowDownRight className="w-4 h-4" />}
           </span>
         )}
       </div>
@@ -150,7 +150,7 @@ function ProgressRing({ progress, size = 120 }: { progress: number; size?: numbe
           strokeWidth={strokeWidth}
           fill="none"
         />
-        <motion.circle
+        <circle
           cx={size / 2}
           cy={size / 2}
           r={radius}
@@ -159,9 +159,7 @@ function ProgressRing({ progress, size = 120 }: { progress: number; size?: numbe
           fill="none"
           strokeLinecap="round"
           strokeDasharray={circumference}
-          initial={{ strokeDashoffset: circumference }}
-          animate={{ strokeDashoffset: offset }}
-          transition={{ duration: 0.5 }}
+          strokeDashoffset={offset}
         />
       </svg>
       <div className="absolute inset-0 flex items-center justify-center flex-col">
@@ -561,11 +559,8 @@ function TradeTimeline({ trades }: { trades: BacktestTradeEvent[] }) {
         const iconColor = isOpen ? '#0ECB81' : '#F6465D'
 
         return (
-          <motion.div
+          <div
             key={`${trade.ts}-${trade.symbol}-${idx}`}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: idx * 0.05 }}
             className="p-3 rounded-lg flex items-center gap-3"
             style={{ background: bgColor, border: `1px solid ${borderColor}` }}
           >
@@ -573,11 +568,8 @@ function TradeTimeline({ trades }: { trades: BacktestTradeEvent[] }) {
               className="w-8 h-8 rounded-full flex items-center justify-center"
               style={{ background: `${iconColor}20` }}
             >
-              {isLong ? (
-                <TrendingUp className="w-4 h-4" style={{ color: iconColor }} />
-              ) : (
-                <TrendingDown className="w-4 h-4" style={{ color: iconColor }} />
-              )}
+              {isLong && <TrendingUp className="w-4 h-4" style={{ color: iconColor }} />}
+              {!isLong && <TrendingDown className="w-4 h-4" style={{ color: iconColor }} />}
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
@@ -612,7 +604,7 @@ function TradeTimeline({ trades }: { trades: BacktestTradeEvent[] }) {
                 USDT
               </div>
             </div>
-          </motion.div>
+          </div>
         )
       })}
     </div>
@@ -672,10 +664,8 @@ function PositionsDisplay({
           const pnlColor = pos.unrealized_pnl >= 0 ? '#0ECB81' : '#F6465D'
 
           return (
-            <motion.div
+            <div
               key={`${pos.symbol}-${pos.side}`}
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
               className="flex items-center justify-between p-2 rounded"
               style={{ background: '#1E2329' }}
             >
@@ -684,11 +674,8 @@ function PositionsDisplay({
                   className="w-6 h-6 rounded flex items-center justify-center"
                   style={{ background: isLong ? '#0ECB8120' : '#F6465D20' }}
                 >
-                  {isLong ? (
-                    <TrendingUp className="w-3.5 h-3.5" style={{ color: '#0ECB81' }} />
-                  ) : (
-                    <TrendingDown className="w-3.5 h-3.5" style={{ color: '#F6465D' }} />
-                  )}
+                  {isLong && <TrendingUp className="w-3.5 h-3.5" style={{ color: '#0ECB81' }} />}
+                  {!isLong && <TrendingDown className="w-3.5 h-3.5" style={{ color: '#F6465D' }} />}
                 </div>
                 <div>
                   <div className="flex items-center gap-1.5">
@@ -733,7 +720,7 @@ function PositionsDisplay({
                   </span>
                 </div>
               </div>
-            </motion.div>
+            </div>
           )
         })}
       </div>
@@ -1052,19 +1039,16 @@ export function BacktestPage() {
   }
 
   const getStateIcon = (state: string) => {
-    switch (state) {
-      case 'running':
-        return <Activity className="w-4 h-4" />
-      case 'completed':
-        return <CheckCircle2 className="w-4 h-4" />
-      case 'failed':
-      case 'liquidated':
-        return <XCircle className="w-4 h-4" />
-      case 'paused':
-        return <Pause className="w-4 h-4" />
-      default:
-        return <Clock className="w-4 h-4" />
-    }
+    // Render all icons and show only the relevant one to avoid DOM insertion errors
+    return (
+      <>
+        <Activity className="w-4 h-4" style={{ display: state === 'running' ? 'inline-block' : 'none' }} />
+        <CheckCircle2 className="w-4 h-4" style={{ display: state === 'completed' ? 'inline-block' : 'none' }} />
+        <XCircle className="w-4 h-4" style={{ display: state === 'failed' || state === 'liquidated' ? 'inline-block' : 'none' }} />
+        <Pause className="w-4 h-4" style={{ display: state === 'paused' ? 'inline-block' : 'none' }} />
+        <Clock className="w-4 h-4" style={{ display: !state || (state !== 'running' && state !== 'completed' && state !== 'failed' && state !== 'liquidated' && state !== 'paused') ? 'inline-block' : 'none' }} />
+      </>
+    )
   }
 
   // Render
@@ -1072,28 +1056,23 @@ export function BacktestPage() {
     <DeepVoidBackground className="py-8" disableAnimation>
       <div className="w-full px-4 md:px-8 space-y-6">
         {/* Toast */}
-        <AnimatePresence>
-          {toast && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="p-3 rounded-lg text-sm"
-              style={{
-                background:
-                  toast.tone === 'error'
-                    ? 'rgba(246,70,93,0.15)'
-                    : toast.tone === 'success'
-                      ? 'rgba(14,203,129,0.15)'
-                      : 'rgba(240,185,11,0.15)',
-                color: toast.tone === 'error' ? '#F6465D' : toast.tone === 'success' ? '#0ECB81' : '#F0B90B',
-                border: `1px solid ${toast.tone === 'error' ? 'rgba(246,70,93,0.3)' : toast.tone === 'success' ? 'rgba(14,203,129,0.3)' : 'rgba(240,185,11,0.3)'}`,
-              }}
-            >
-              {toast.text}
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {toast && (
+          <div
+            className="p-3 rounded-lg text-sm"
+            style={{
+              background:
+                toast.tone === 'error'
+                  ? 'rgba(246,70,93,0.15)'
+                  : toast.tone === 'success'
+                    ? 'rgba(14,203,129,0.15)'
+                    : 'rgba(240,185,11,0.15)',
+              color: toast.tone === 'error' ? '#F6465D' : toast.tone === 'success' ? '#0ECB81' : '#F0B90B',
+              border: `1px solid ${toast.tone === 'error' ? 'rgba(246,70,93,0.3)' : toast.tone === 'success' ? 'rgba(14,203,129,0.3)' : 'rgba(240,185,11,0.3)'}`,
+            }}
+          >
+            {toast.text}
+          </div>
+        )}
 
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -1158,16 +1137,9 @@ export function BacktestPage() {
               </div>
 
               <form onSubmit={handleStart}>
-                <AnimatePresence mode="wait">
                   {/* Step 1: Model & Symbols */}
                   {wizardStep === 1 && (
-                    <motion.div
-                      key="step1"
-                      initial={{ opacity: 0, x: 20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -20 }}
-                      className="space-y-4"
-                    >
+                    <div className="space-y-4">
                       <div>
                         <label className="block text-xs mb-2" style={{ color: '#848E9C' }}>
                           {tr('form.aiModelLabel')}
@@ -1317,18 +1289,12 @@ export function BacktestPage() {
                         {language === 'zh' ? '下一步' : 'Next'}
                         <ChevronRight className="w-4 h-4" />
                       </button>
-                    </motion.div>
+                    </div>
                   )}
 
                   {/* Step 2: Parameters */}
                   {wizardStep === 2 && (
-                    <motion.div
-                      key="step2"
-                      initial={{ opacity: 0, x: 20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -20 }}
-                      className="space-y-4"
-                    >
+                    <div className="space-y-4">
                       <div>
                         <label className="block text-xs mb-2" style={{ color: '#848E9C' }}>
                           {tr('form.timeRangeLabel')}
@@ -1447,18 +1413,12 @@ export function BacktestPage() {
                           <ChevronRight className="w-4 h-4" />
                         </button>
                       </div>
-                    </motion.div>
+                    </div>
                   )}
 
                   {/* Step 3: Advanced & Confirm */}
                   {wizardStep === 3 && (
-                    <motion.div
-                      key="step3"
-                      initial={{ opacity: 0, x: 20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -20 }}
-                      className="space-y-4"
-                    >
+                    <div className="space-y-4">
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                           <label className="block text-xs mb-1" style={{ color: '#848E9C' }}>
@@ -1585,17 +1545,12 @@ export function BacktestPage() {
                           className="flex-1 py-2 rounded-lg font-bold flex items-center justify-center gap-2 disabled:opacity-50"
                           style={{ background: '#F0B90B', color: '#0B0E11' }}
                         >
-                          {isStarting ? (
-                            <RefreshCw className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Zap className="w-4 h-4" />
-                          )}
+                          <Zap className="w-4 h-4" style={{ opacity: isStarting ? 0.5 : 1 }} />
                           {isStarting ? tr('starting') : tr('start')}
                         </button>
                       </div>
-                    </motion.div>
+                    </div>
                   )}
-                </AnimatePresence>
               </form>
             </div>
 
@@ -1843,8 +1798,7 @@ export function BacktestPage() {
                                 ? 'AI决策'
                                 : 'Decisions'}
                         {viewTab === tab && (
-                          <motion.div
-                            layoutId="tab-indicator"
+                          <div
                             className="absolute bottom-0 left-0 right-0 h-0.5"
                             style={{ background: '#F0B90B' }}
                           />
@@ -1854,14 +1808,8 @@ export function BacktestPage() {
                   </div>
 
                   <div className="p-4">
-                    <AnimatePresence mode="wait">
                       {viewTab === 'overview' && (
-                        <motion.div
-                          key="overview"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                        >
+                        <div>
                           {equity && equity.length > 0 ? (
                             <BacktestChart equity={equity} trades={trades ?? []} />
                           ) : (
@@ -1908,17 +1856,11 @@ export function BacktestPage() {
                               </div>
                             </div>
                           )}
-                        </motion.div>
+                        </div>
                       )}
 
                       {viewTab === 'chart' && (
-                        <motion.div
-                          key="chart"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          className="space-y-6"
-                        >
+                        <div className="space-y-6">
                           {/* Equity Chart */}
                           <div>
                             <h4 className="text-sm font-medium mb-3" style={{ color: '#EAECEF' }}>
@@ -1946,28 +1888,17 @@ export function BacktestPage() {
                               />
                             </div>
                           )}
-                        </motion.div>
+                        </div>
                       )}
 
                       {viewTab === 'trades' && (
-                        <motion.div
-                          key="trades"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                        >
+                        <div>
                           <TradeTimeline trades={trades ?? []} />
-                        </motion.div>
+                        </div>
                       )}
 
                       {viewTab === 'decisions' && (
-                        <motion.div
-                          key="decisions"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          className="space-y-3 max-h-[500px] overflow-y-auto"
-                        >
+                        <div className="space-y-3 max-h-[500px] overflow-y-auto">
                           {decisions && decisions.length > 0 ? (
                             decisions.map((d) => (
                               <DecisionCard
@@ -1981,9 +1912,8 @@ export function BacktestPage() {
                               {tr('decisionTrail.emptyHint')}
                             </div>
                           )}
-                        </motion.div>
+                        </div>
                       )}
-                    </AnimatePresence>
                   </div>
                 </div>
               </>
