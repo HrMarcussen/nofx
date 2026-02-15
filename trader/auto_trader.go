@@ -204,6 +204,16 @@ func NewAutoTrader(config AutoTraderConfig, st *store.Store, userID string) (*Au
 		mcpClient.SetAPIKey(apiKey, config.CustomAPIURL, config.CustomModelName)
 		logger.Infof("🤖 [%s] Using Alibaba Cloud Qwen AI", config.Name)
 
+	case "openclaw":
+		mcpClient = mcp.NewOpenClawClient()
+		apiKey := config.CustomAPIKey
+		baseURL := config.CustomAPIURL
+		if baseURL == "" {
+			baseURL = "http://localhost:8888"
+		}
+		mcpClient.SetAPIKey(apiKey, baseURL, config.CustomModelName)
+		logger.Infof("🤖 [%s] Using OpenClaw (Leeloo) AI Engine: %s", config.Name, baseURL)
+
 	case "custom":
 		mcpClient = mcp.New()
 		mcpClient.SetAPIKey(config.CustomAPIKey, config.CustomAPIURL, config.CustomModelName)

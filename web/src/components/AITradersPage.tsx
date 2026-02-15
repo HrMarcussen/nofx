@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import { api } from '../lib/api'
 import type {
@@ -143,7 +142,6 @@ function truncateAddress(address: string, startLen = 6, endLen = 4): string {
 export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
   const { language } = useLanguage()
   const { user, token } = useAuth()
-  const navigate = useNavigate()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showModelModal, setShowModelModal] = useState(false)
@@ -1201,9 +1199,10 @@ export function AITradersPage({ onTraderSelect }: AITradersPageProps) {
                           if (onTraderSelect) {
                             onTraderSelect(trader.trader_id)
                           } else {
-                            // 使用 slug 格式: name-id前4位
+                            // Fallback: manual navigation if onTraderSelect is not provided
+                            console.error('onTraderSelect is not defined! Using fallback navigation');
                             const slug = `${trader.trader_name}-${trader.trader_id.slice(0, 4)}`
-                            navigate(`/dashboard?trader=${encodeURIComponent(slug)}`)
+                            window.location.href = `/dashboard?trader=${encodeURIComponent(slug)}`;
                           }
                         }}
                         className="px-2 md:px-3 py-1.5 md:py-2 rounded text-xs md:text-sm font-semibold transition-all hover:scale-105 flex items-center gap-1 whitespace-nowrap"

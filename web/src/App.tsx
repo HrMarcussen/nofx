@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
 import useSWR from 'swr'
 import { api } from './lib/api'
 import { TraderDashboardPage } from './pages/TraderDashboardPage'
@@ -17,6 +16,7 @@ import { StrategyMarketPage } from './pages/StrategyMarketPage'
 import { DataPage } from './pages/DataPage'
 import { LoginRequiredOverlay } from './components/LoginRequiredOverlay'
 import HeaderBar from './components/HeaderBar'
+import ErrorBoundary from './components/ErrorBoundary'
 import { LanguageProvider, useLanguage } from './contexts/LanguageContext'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ConfirmDialogProvider } from './components/ConfirmDialog'
@@ -54,7 +54,6 @@ function App() {
   const { language, setLanguage } = useLanguage()
   const { user, token, logout, isLoading } = useAuth()
   const { loading: configLoading } = useSystemConfig()
-  const [route, setRoute] = useState(window.location.pathname)
 
   // Debug log
   useEffect(() => {
@@ -74,6 +73,10 @@ function App() {
     if (path === '/debate' || hash === 'debate') return 'debate'
     if (path === '/dashboard' || hash === 'trader' || hash === 'details')
       return 'trader'
+    if (path === '/faq' || hash === 'faq') return 'faq'
+    if (path === '/login') return 'login'
+    if (path === '/register') return 'register'
+    if (path === '/competition' || hash === 'competition') return 'competition'
     return 'competition' // 默认为竞赛页面
   }
 
@@ -86,26 +89,68 @@ function App() {
     setLoginOverlayOpen(true)
   }
 
-  // Unified page navigation handler
+  // Unified page navigation handler - FIXED: Bulletproof navigation with safety checks
   const navigateToPage = (page: Page) => {
-    const pathMap: Record<Page, string> = {
-      'competition': '/competition',
-      'strategy-market': '/strategy-market',
-      'data': '/data',
-      'traders': '/traders',
-      'trader': '/dashboard',
-      'backtest': '/backtest',
-      'strategy': '/strategy',
-      'debate': '/debate',
-      'faq': '/faq',
-      'login': '/login',
-      'register': '/register',
+    console.log('🔷 [App] navigateToPage called with:', { 
+      page, 
+      currentPage,
+      currentPageType: typeof currentPage,
+      pageType: typeof page,
+    });
+    
+    // Early return if page is the same (prevent unnecessary re-renders)
+    if (page === currentPage) {
+      console.log('🔷 [App] Already on page:', page, '- skipping navigation');
+      return;
     }
-    const path = pathMap[page]
-    if (path) {
-      window.history.pushState({}, '', path)
-      setRoute(path)
-      setCurrentPage(page)
+    
+    try {
+      const pathMap: Record<Page, string> = {
+        'competition': '/competition',
+        'strategy-market': '/strategy-market',
+        'data': '/data',
+        'traders': '/traders',
+        'trader': '/dashboard',
+        'backtest': '/backtest',
+        'strategy': '/strategy',
+        'debate': '/debate',
+        'faq': '/faq',
+        'login': '/login',
+        'register': '/register',
+      }
+      const path = pathMap[page]
+      console.log('🔷 [App] pathMap lookup result:', { page, path, pathExists: !!path });
+      
+      if (path) {
+        console.log('🔷 [App] Calling window.history.pushState:', { page, path });
+        // Wrap in requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(() => {
+          try {
+            window.history.pushState({}, '', path)
+            console.log('🔷 [App] pushState completed, calling setCurrentPage:', page);
+            setCurrentPage(page)
+            console.log('🔷 [App] setCurrentPage called, navigation complete');
+          } catch (innerError) {
+            console.error('🔴 [App] Error during state update:', innerError);
+            // Fallback: still try to update state even if pushState fails
+            setCurrentPage(page)
+          }
+        });
+      } else {
+        console.error('🔴 [App] No path found for page:', page);
+        console.error('🔴 [App] Available pages:', Object.keys(pathMap));
+      }
+    } catch (error) {
+      console.error('🔴 [App] navigateToPage ERROR:', error);
+      console.error('🔴 [App] Error details:', {
+        message: (error as Error).message,
+        stack: (error as Error).stack,
+        name: (error as Error).name,
+      });
+      // DON'T re-throw - let the app continue
+      // Instead, try fallback navigation
+      console.error('🔴 [App] Attempting fallback navigation...');
+      setCurrentPage(page);
     }
   }
 
@@ -140,53 +185,81 @@ function App() {
   const [lastUpdate, setLastUpdate] = useState<string>('--:--:--')
   const [decisionsLimit, setDecisionsLimit] = useState<number>(5)
 
-  // 监听URL变化，同步页面状态
+  // 监听URL变化（浏览器前进/后退），同步页面状态
   useEffect(() => {
     const handleRouteChange = () => {
-      const path = window.location.pathname
-      const hash = window.location.hash.slice(1)
-      const params = new URLSearchParams(window.location.search)
-      const traderParam = params.get('trader')
+      console.log('🔶 [Route Change] Detected:', {
+        pathname: window.location.pathname,
+        hash: window.location.hash,
+        search: window.location.search,
+      });
+      
+      try {
+        const path = window.location.pathname
+        const hash = window.location.hash.slice(1)
+        const params = new URLSearchParams(window.location.search)
+        const traderParam = params.get('trader')
 
-      if (path === '/traders' || hash === 'traders') {
-        setCurrentPage('traders')
-      } else if (path === '/backtest' || hash === 'backtest') {
-        setCurrentPage('backtest')
-      } else if (path === '/strategy' || hash === 'strategy') {
-        setCurrentPage('strategy')
-      } else if (path === '/strategy-market' || hash === 'strategy-market') {
-        setCurrentPage('strategy-market')
-      } else if (path === '/data' || hash === 'data') {
-        setCurrentPage('data')
-      } else if (path === '/debate' || hash === 'debate') {
-        setCurrentPage('debate')
-      } else if (
-        path === '/dashboard' ||
-        hash === 'trader' ||
-        hash === 'details'
-      ) {
-        setCurrentPage('trader')
-        // 如果 URL 中有 trader 参数（slug 格式），更新选中的 trader
-        if (traderParam) {
-          setSelectedTraderSlug(traderParam)
+        // Determine page based on path
+        let newPage: Page = 'competition' // default
+      
+        if (path === '/traders' || hash === 'traders') {
+          newPage = 'traders'
+        } else if (path === '/backtest' || hash === 'backtest') {
+          newPage = 'backtest'
+        } else if (path === '/strategy' || hash === 'strategy') {
+          newPage = 'strategy'
+        } else if (path === '/strategy-market' || hash === 'strategy-market') {
+          newPage = 'strategy-market'
+        } else if (path === '/data' || hash === 'data') {
+          newPage = 'data'
+        } else if (path === '/debate' || hash === 'debate') {
+          newPage = 'debate'
+        } else if (path === '/faq' || hash === 'faq') {
+          newPage = 'faq'
+        } else if (path === '/login') {
+          newPage = 'login'
+        } else if (path === '/register') {
+          newPage = 'register'
+        } else if (path === '/dashboard' || hash === 'trader' || hash === 'details') {
+          newPage = 'trader'
+          // 如果 URL 中有 trader 参数（slug 格式），更新选中的 trader
+          if (traderParam) {
+            setSelectedTraderSlug(traderParam)
+          }
+        } else if (path === '/competition' || hash === 'competition' || hash === '' || path === '/') {
+          newPage = 'competition'
         }
-      } else if (
-        path === '/competition' ||
-        hash === 'competition' ||
-        hash === ''
-      ) {
-        setCurrentPage('competition')
+        
+        console.log('🔶 [Route Change] Setting page to:', { 
+          newPage,
+        });
+        
+        // Use requestAnimationFrame to ensure state updates happen cleanly
+        requestAnimationFrame(() => {
+          setCurrentPage(newPage)
+          console.log('🔶 [Route Change] setCurrentPage completed');
+        });
+      } catch (error) {
+        console.error('🔴 [Route Change] ERROR:', error);
+        console.error('🔴 [Route Change] Error details:', {
+          message: (error as Error).message,
+          stack: (error as Error).stack,
+          name: (error as Error).name,
+        });
+        // Don't let errors crash the app
       }
-      setRoute(path)
     }
 
-    window.addEventListener('hashchange', handleRouteChange)
+    // Listen for browser back/forward
     window.addEventListener('popstate', handleRouteChange)
+    window.addEventListener('hashchange', handleRouteChange)
+    
     return () => {
-      window.removeEventListener('hashchange', handleRouteChange)
       window.removeEventListener('popstate', handleRouteChange)
+      window.removeEventListener('hashchange', handleRouteChange)
     }
-  }, [])
+  }, []) // Empty deps array is correct - we don't want to re-bind on every state change
 
   // 切换页面时更新URL hash (当前通过按钮直接调用setCurrentPage，这个函数暂时保留用于未来扩展)
   // const navigateToPage = (page: Page) => {
@@ -302,25 +375,8 @@ function App() {
 
   const selectedTrader = traders?.find((t) => t.trader_id === selectedTraderId)
 
-  // Handle routing
-  useEffect(() => {
-    const handlePopState = () => {
-      setRoute(window.location.pathname)
-    }
-    window.addEventListener('popstate', handlePopState)
-    return () => window.removeEventListener('popstate', handlePopState)
-  }, [])
-
-  // Set current page based on route for consistent navigation state
-  useEffect(() => {
-    if (route === '/competition') {
-      setCurrentPage('competition')
-    } else if (route === '/traders') {
-      setCurrentPage('traders')
-    } else if (route === '/dashboard') {
-      setCurrentPage('trader')
-    }
-  }, [route])
+  // Route state is now managed by the single useEffect above
+  // (removed duplicate handlers)
 
   // Show loading spinner while checking auth or config
   if (isLoading || configLoading) {
@@ -341,14 +397,14 @@ function App() {
     )
   }
 
-  // Handle specific routes regardless of authentication
-  if (route === '/login') {
+  // Handle specific routes regardless of authentication - FIXED: use currentPage
+  if (currentPage === 'login') {
     return <LoginPage />
   }
-  if (route === '/register') {
+  if (currentPage === 'register') {
     return <RegisterPage />
   }
-  if (route === '/faq') {
+  if (currentPage === 'faq') {
     return (
       <div
         className="min-h-screen"
@@ -373,28 +429,11 @@ function App() {
       </div>
     )
   }
-  if (route === '/reset-password') {
+  if (window.location.pathname === '/reset-password') {
     return <ResetPasswordPage />
   }
-  // Data page - publicly accessible with embedded dashboard
-  if (route === '/data') {
-    const dataPageNavigate = (page: Page) => {
-      const pathMap: Record<string, string> = {
-        'data': '/data',
-        'competition': '/competition',
-        'strategy-market': '/strategy-market',
-        'traders': '/traders',
-        'trader': '/dashboard',
-        'backtest': '/backtest',
-        'strategy': '/strategy',
-        'debate': '/debate',
-        'faq': '/faq',
-      }
-      const path = pathMap[page]
-      if (path) {
-        window.location.href = path
-      }
-    }
+  // Data page - publicly accessible with embedded dashboard - FIXED: use navigateToPage
+  if (currentPage === 'data') {
     return (
       <div
         className="min-h-screen"
@@ -408,7 +447,7 @@ function App() {
           user={user}
           onLogout={logout}
           onLoginRequired={handleLoginRequired}
-          onPageChange={dataPageNavigate}
+          onPageChange={navigateToPage}
         />
         <main className="pt-16">
           <DataPage />
@@ -422,54 +461,46 @@ function App() {
     )
   }
   // Show landing page for root route
-  if (route === '/' || route === '') {
+  if (currentPage === 'competition' && (!user || !token)) {
     return <LandingPage />
   }
 
-  // Redirect unauthenticated users to landing page
+  // Redirect unauthenticated users to landing page for protected routes
   if (!user || !token) {
     return <LandingPage />
   }
 
   return (
-    <div
-      className="min-h-screen"
-      style={{ background: '#0B0E11', color: '#EAECEF' }}
-    >
-      <HeaderBar
-        isLoggedIn={!!user}
-        currentPage={currentPage}
-        language={language}
-        onLanguageChange={setLanguage}
-        user={user}
-        onLogout={logout}
-        onLoginRequired={handleLoginRequired}
-        onPageChange={navigateToPage}
-      />
+    <ErrorBoundary>
+      <div
+        className="min-h-screen"
+        style={{ background: '#0B0E11', color: '#EAECEF' }}
+      >
+        <ErrorBoundary fallback={<div style={{ padding: '20px', color: 'red', background: '#1E2329' }}>HeaderBar crashed - check console for details</div>}>
+          <HeaderBar
+            isLoggedIn={!!user}
+            currentPage={currentPage}
+            language={language}
+            onLanguageChange={setLanguage}
+            user={user}
+            onLogout={logout}
+            onLoginRequired={handleLoginRequired}
+            onPageChange={navigateToPage}
+          />
+        </ErrorBoundary>
 
-      {/* Main Content with Page Transitions */}
+      {/* Main Content */}
       <main className="min-h-screen pt-16">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentPage}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
-          >
+        <div style={{ minHeight: 'calc(100vh - 64px)' }}>
             {currentPage === 'competition' ? (
               <CompetitionPage />
-            ) : currentPage === 'data' ? (
-              <DataPage />
             ) : currentPage === 'strategy-market' ? (
               <StrategyMarketPage />
             ) : currentPage === 'traders' ? (
               <AITradersPage
                 onTraderSelect={(traderId) => {
                   setSelectedTraderId(traderId)
-                  window.history.pushState({}, '', '/dashboard')
-                  setRoute('/dashboard')
-                  setCurrentPage('trader')
+                  navigateToPage('trader')
                 }}
               />
             ) : currentPage === 'backtest' ? (
@@ -504,15 +535,12 @@ function App() {
                   }
                 }}
                 onNavigateToTraders={() => {
-                  window.history.pushState({}, '', '/traders')
-                  setRoute('/traders')
-                  setCurrentPage('traders')
+                  navigateToPage('traders')
                 }}
                 exchanges={exchanges}
               />
             )}
-          </motion.div>
-        </AnimatePresence>
+        </div>
       </main>
 
       {/* Footer - Hidden on debate page */}
@@ -636,6 +664,7 @@ function App() {
         featureName={loginOverlayFeature}
       />
     </div>
+    </ErrorBoundary>
   )
 }
 

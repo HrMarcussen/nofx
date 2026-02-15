@@ -240,7 +240,7 @@ export function IndicatorEditor({
                 </span>
               )}
               <a
-                href="https://nofxos.ai/api-docs"
+                href="https://github.com/neur0man1ac/nofx"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-full transition-all hover:scale-[1.02]"

@@ -1674,6 +1674,7 @@ func (s *Server) handleGetModelConfigs(c *gin.Context) {
 	if len(models) == 0 {
 		logger.Infof("⚠️ No AI models in database, returning defaults")
 		defaultModels := []SafeModelConfig{
+			{ID: "openclaw", Name: "OpenClaw (Leeloo)", Provider: "openclaw", Enabled: false},
 			{ID: "deepseek", Name: "DeepSeek AI", Provider: "deepseek", Enabled: false},
 			{ID: "qwen", Name: "Qwen AI", Provider: "qwen", Enabled: false},
 			{ID: "openai", Name: "OpenAI", Provider: "openai", Enabled: false},
@@ -3369,6 +3370,7 @@ func (s *Server) initUserDefaultConfigs(userID string) error {
 func (s *Server) handleGetSupportedModels(c *gin.Context) {
 	// Return static list of supported AI models with default versions
 	supportedModels := []map[string]interface{}{
+		{"id": "openclaw", "name": "OpenClaw (Leeloo)", "provider": "openclaw", "defaultModel": "claude-opus-leeloo"},
 		{"id": "deepseek", "name": "DeepSeek", "provider": "deepseek", "defaultModel": "deepseek-chat"},
 		{"id": "qwen", "name": "Qwen", "provider": "qwen", "defaultModel": "qwen3-max"},
 		{"id": "openai", "name": "OpenAI", "provider": "openai", "defaultModel": "gpt-5.1"},

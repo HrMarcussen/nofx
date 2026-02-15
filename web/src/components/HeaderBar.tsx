@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Menu, X, ChevronDown } from 'lucide-react'
 import { t, type Language } from '../i18n/translations'
@@ -43,7 +42,6 @@ export default function HeaderBar({
   onPageChange,
   onLoginRequired,
 }: HeaderBarProps) {
-  const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [languageDropdownOpen, setLanguageDropdownOpen] = useState(false)
   const [userDropdownOpen, setUserDropdownOpen] = useState(false)
@@ -51,6 +49,24 @@ export default function HeaderBar({
   const userDropdownRef = useRef<HTMLDivElement>(null)
   const { config: systemConfig } = useSystemConfig()
   const registrationEnabled = systemConfig?.registration_enabled !== false
+
+  // Debug: Log component renders and prop changes
+  useEffect(() => {
+    console.log('🟣 [HeaderBar] Rendered/Updated with props:', {
+      currentPage,
+      isLoggedIn,
+      onPageChange: typeof onPageChange,
+      onPageChangeExists: !!onPageChange,
+      user: user?.email,
+    });
+  }, [currentPage, isLoggedIn, onPageChange, user]);
+
+  useEffect(() => {
+    console.log('🟣 [HeaderBar] Mounted');
+    return () => {
+      console.log('🟣 [HeaderBar] Unmounting');
+    };
+  }, []);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -111,33 +127,89 @@ export default function HeaderBar({
               ]
 
               const handleNavClick = (tab: typeof navTabs[0]) => {
-                // If requires auth and not logged in, show login prompt
-                if (tab.requiresAuth && !isLoggedIn) {
-                  onLoginRequired?.(tab.label)
-                  return
+                console.log('🔵 [HeaderBar] handleNavClick called:', {
+                  page: tab.page,
+                  path: tab.path,
+                  label: tab.label,
+                  requiresAuth: tab.requiresAuth,
+                  isLoggedIn: isLoggedIn,
+                  currentPage: currentPage,
+                  onPageChange: typeof onPageChange,
+                  onPageChangeExists: !!onPageChange,
+                });
+                
+                try {
+                  // Safety check: validate tab object
+                  if (!tab || !tab.page || !tab.path) {
+                    console.error('🔴 [HeaderBar] Invalid tab object:', tab);
+                    return;
+                  }
+                  
+                  // If requires auth and not logged in, show login prompt
+                  if (tab.requiresAuth && !isLoggedIn) {
+                    console.log('🟡 [HeaderBar] Auth required, showing login prompt');
+                    onLoginRequired?.(tab.label)
+                    return
+                  }
+                  
+                  // Navigate normally - use custom handler if provided
+                  if (onPageChange && typeof onPageChange === 'function') {
+                    console.log('🟢 [HeaderBar] Calling onPageChange with:', tab.page);
+                    try {
+                      onPageChange(tab.page)
+                      console.log('🟢 [HeaderBar] onPageChange completed successfully');
+                    } catch (navError) {
+                      console.error('🔴 [HeaderBar] onPageChange threw error:', navError);
+                      // Fallback to manual navigation
+                      console.log('🟡 [HeaderBar] Falling back to window.location.href');
+                      window.location.href = tab.path;
+                    }
+                  } else {
+                    // Fallback: manual navigation if onPageChange is not provided
+                    console.warn('🟠 [HeaderBar] onPageChange is not a function! Using fallback navigation');
+                    console.log('🟡 [HeaderBar] Calling window.location.href with:', tab.path);
+                    window.location.href = tab.path;
+                  }
+                } catch (error) {
+                  console.error('🔴 [HeaderBar] handleNavClick ERROR:', error);
+                  console.error('🔴 [HeaderBar] Error details:', {
+                    message: (error as Error).message,
+                    stack: (error as Error).stack,
+                    name: (error as Error).name,
+                  });
+                  // DON'T re-throw - use fallback navigation instead
+                  console.log('🟡 [HeaderBar] Using emergency fallback navigation');
+                  try {
+                    window.location.href = tab.path;
+                  } catch (fallbackError) {
+                    console.error('🔴 [HeaderBar] Even fallback failed:', fallbackError);
+                  }
                 }
-                // Navigate normally
-                if (onPageChange) {
-                  onPageChange(tab.page)
-                }
-                navigate(tab.path)
               }
 
-              return navTabs.map((tab) => (
-                <button
-                  key={tab.page}
-                  onClick={() => handleNavClick(tab)}
-                  className={`text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500 px-3 py-2 rounded-lg
-                    ${currentPage === tab.page ? 'text-nofx-gold' : 'text-nofx-text-muted hover:text-nofx-gold'}`}
-                >
-                  {currentPage === tab.page && (
-                    <span
-                      className="absolute inset-0 rounded-lg bg-nofx-gold/15 -z-10"
-                    />
-                  )}
-                  {tab.label}
-                </button>
-              ))
+              return navTabs.map((tab) => {
+                // Safety check: ensure tab has required properties
+                if (!tab || !tab.page || !tab.label || !tab.path) {
+                  console.error('🔴 [HeaderBar] Invalid tab in navTabs:', tab);
+                  return null;
+                }
+                
+                return (
+                  <button
+                    key={tab.page}
+                    onClick={() => handleNavClick(tab)}
+                    className={`text-sm font-bold transition-all duration-300 relative focus:outline-2 focus:outline-yellow-500 px-3 py-2 rounded-lg
+                      ${currentPage === tab.page ? 'text-nofx-gold' : 'text-nofx-text-muted hover:text-nofx-gold'}`}
+                  >
+                    {currentPage === tab.page && (
+                      <span
+                        className="absolute inset-0 rounded-lg bg-nofx-gold/15 -z-10"
+                      />
+                    )}
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })
             })()}
           </div>
 
@@ -341,16 +413,66 @@ export default function HeaderBar({
                   ]
 
                   const handleMobileNavClick = (tab: typeof navTabs[0]) => {
-                    if (tab.requiresAuth && !isLoggedIn) {
-                      onLoginRequired?.(tab.label)
+                    console.log('🔵 [HeaderBar Mobile] handleMobileNavClick called:', {
+                      page: tab.page,
+                      path: tab.path,
+                      label: tab.label,
+                      requiresAuth: tab.requiresAuth,
+                      isLoggedIn: isLoggedIn,
+                      currentPage: currentPage,
+                      onPageChange: typeof onPageChange,
+                      onPageChangeExists: !!onPageChange,
+                    });
+                    
+                    try {
+                      // Safety check: validate tab object
+                      if (!tab || !tab.page || !tab.path) {
+                        console.error('🔴 [HeaderBar Mobile] Invalid tab object:', tab);
+                        setMobileMenuOpen(false)
+                        return;
+                      }
+                      
+                      if (tab.requiresAuth && !isLoggedIn) {
+                        console.log('🟡 [HeaderBar Mobile] Auth required, showing login prompt');
+                        onLoginRequired?.(tab.label)
+                        setMobileMenuOpen(false)
+                        return
+                      }
+                      
+                      if (onPageChange && typeof onPageChange === 'function') {
+                        console.log('🟢 [HeaderBar Mobile] Calling onPageChange with:', tab.page);
+                        try {
+                          onPageChange(tab.page)
+                          console.log('🟢 [HeaderBar Mobile] onPageChange completed successfully');
+                        } catch (navError) {
+                          console.error('🔴 [HeaderBar Mobile] onPageChange threw error:', navError);
+                          // Fallback to manual navigation
+                          console.log('🟡 [HeaderBar Mobile] Falling back to window.location.href');
+                          window.location.href = tab.path;
+                        }
+                      } else {
+                        // Fallback: manual navigation if onPageChange is not provided
+                        console.warn('🟠 [HeaderBar Mobile] onPageChange is not a function! Using fallback navigation');
+                        console.log('🟡 [HeaderBar Mobile] Calling window.location.href with:', tab.path);
+                        window.location.href = tab.path;
+                      }
                       setMobileMenuOpen(false)
-                      return
+                    } catch (error) {
+                      console.error('🔴 [HeaderBar Mobile] handleMobileNavClick ERROR:', error);
+                      console.error('🔴 [HeaderBar Mobile] Error details:', {
+                        message: (error as Error).message,
+                        stack: (error as Error).stack,
+                        name: (error as Error).name,
+                      });
+                      setMobileMenuOpen(false)
+                      // DON'T re-throw - use fallback navigation instead
+                      console.log('🟡 [HeaderBar Mobile] Using emergency fallback navigation');
+                      try {
+                        window.location.href = tab.path;
+                      } catch (fallbackError) {
+                        console.error('🔴 [HeaderBar Mobile] Even fallback failed:', fallbackError);
+                      }
                     }
-                    if (onPageChange) {
-                      onPageChange(tab.page)
-                    }
-                    navigate(tab.path)
-                    setMobileMenuOpen(false)
                   }
 
                   return navTabs.map((tab, i) => (
