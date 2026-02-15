@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenClaw Trading Decision Adapter
+After=network.target
+
+
+[Service]
+Type=simple
+User=thomas
+WorkingDirectory=/home/thomas/.openclaw/workspace-opus/trading
+EnvironmentFile=/home/thomas/.openclaw/workspace-opus/trading/.env
+ExecStart=/home/thomas/.nvm/versions/node/v24.13.0/bin/node /home/thomas/.openclaw/workspace-opus/trading/trading-decision-adapter.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openclaw-trading-adapter
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
