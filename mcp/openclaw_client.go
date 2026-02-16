@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"nofx/logger"
 	"nofx/openclaw"
+	"strings"
 	"time"
 )
 
@@ -13,6 +14,18 @@ const (
 	ProviderOpenClaw       = "openclaw"
 	DefaultOpenClawBaseURL = "http://localhost:8888"
 )
+
+// sanitizeForNoFx removes characters that NoFx's strict JSON validator rejects.
+// NoFx does not allow range symbols (~, ±, ≈) or ellipses (…) in string fields.
+// Example: "~255M total" → "255M total"
+func sanitizeForNoFx(text string) string {
+	// Strip problematic characters that NoFx's validator rejects
+	text = strings.ReplaceAll(text, "~", "")   // tilde (approximately)
+	text = strings.ReplaceAll(text, "±", "")   // plus-minus
+	text = strings.ReplaceAll(text, "≈", "")   // approximately equal
+	text = strings.ReplaceAll(text, "…", "...") // ellipsis → three dots
+	return text
+}
 
 // OpenClawClient implements the AIClient interface using OpenClaw
 type OpenClawClient struct {
@@ -112,9 +125,12 @@ func (c *OpenClawClient) call(systemPrompt, userPrompt string) (string, error) {
 	processingTime := time.Since(startTime)
 	c.logger.Infof("✓ [OpenClaw] Received %d trading decisions from Leeloo (took %v)", len(resp.Decisions), processingTime)
 
+	// Sanitize CoTTrace for NoFx's strict JSON validator (removes ~, ±, ≈, …)
+	sanitizedCoTTrace := sanitizeForNoFx(resp.CoTTrace)
+
 	// Log Chain of Thought if available
-	if resp.CoTTrace != "" {
-		c.logger.Debugf("[OpenClaw] Leeloo's Chain of Thought:\n%s", resp.CoTTrace)
+	if sanitizedCoTTrace != "" {
+		c.logger.Debugf("[OpenClaw] Leeloo's Chain of Thought:\n%s", sanitizedCoTTrace)
 	}
 
 	// Convert openclaw.Decision (camelCase JSON) to kernel-compatible snake_case format.
@@ -122,10 +138,13 @@ func (c *OpenClawClient) call(systemPrompt, userPrompt string) (string, error) {
 	// but openclaw.Decision marshals to: positionSizeUsd, stopLoss, takeProfit (camelCase).
 	kernelDecisions := make([]map[string]interface{}, 0, len(resp.Decisions))
 	for _, d := range resp.Decisions {
+		// Sanitize reasoning field to prevent NoFx JSON validation errors
+		sanitizedReasoning := sanitizeForNoFx(d.Reasoning)
+		
 		kd := map[string]interface{}{
 			"symbol":    d.Symbol,
 			"action":    d.Action,
-			"reasoning": d.Reasoning,
+			"reasoning": sanitizedReasoning,
 		}
 		// Always include confidence if non-zero
 		if d.Confidence > 0 {
@@ -170,8 +189,8 @@ func (c *OpenClawClient) call(systemPrompt, userPrompt string) (string, error) {
 	// Wrap in <reasoning> + <decision> tags that the kernel's extractDecisions() expects.
 	// This matches the format returned by all other AI providers.
 	var result string
-	if resp.CoTTrace != "" {
-		result = fmt.Sprintf("<reasoning>\n%s\n</reasoning>\n\n<decision>\n%s\n</decision>", resp.CoTTrace, string(decisionsJSON))
+	if sanitizedCoTTrace != "" {
+		result = fmt.Sprintf("<reasoning>\n%s\n</reasoning>\n\n<decision>\n%s\n</decision>", sanitizedCoTTrace, string(decisionsJSON))
 	} else {
 		result = fmt.Sprintf("<decision>\n%s\n</decision>", string(decisionsJSON))
 	}

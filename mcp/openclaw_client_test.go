@@ -486,3 +486,212 @@ func TestOpenClawCallNoReasoningTag(t *testing.T) {
 		t.Error("Should NOT have <reasoning> tag when CoTTrace is empty")
 	}
 }
+
+// TestOpenClawSanitizeForNoFx verifies that problematic characters are stripped
+// from reasoning text before being sent to NoFx's strict JSON validator.
+// This fixes the "JSON cannot contain range symbol ~" error.
+func TestOpenClawSanitizeForNoFx(t *testing.T) {
+	tests := []struct {
+		name               string
+		cotTrace           string
+		reasoning          string
+		wantCoTContains    []string
+		wantCoTNotContains []string
+		wantJSONContains   []string
+		wantJSONNotContains []string
+	}{
+		{
+			name:      "tilde in reasoning and CoT",
+			cotTrace:  "Market cap ~255M total, expecting ~10% growth",
+			reasoning: "Position size ~3500 USD with ~5x leverage",
+			wantCoTContains: []string{
+				"Market cap 255M total",
+				"expecting 10% growth",
+			},
+			wantCoTNotContains: []string{"~"},
+			wantJSONContains: []string{
+				`"reasoning":"Position size 3500 USD with 5x leverage"`,
+			},
+			wantJSONNotContains: []string{"~"},
+		},
+		{
+			name:      "plus-minus symbol",
+			cotTrace:  "Expected return ±15% over 3 months",
+			reasoning: "Risk tolerance ±10%",
+			wantCoTContains: []string{
+				"Expected return 15%",
+			},
+			wantCoTNotContains: []string{"±"},
+			wantJSONContains: []string{
+				`"reasoning":"Risk tolerance 10%"`,
+			},
+			wantJSONNotContains: []string{"±"},
+		},
+		{
+			name:      "approximately equal symbol",
+			cotTrace:  "Current price ≈68500 USD",
+			reasoning: "Target ≈70000",
+			wantCoTContains: []string{
+				"Current price 68500",
+			},
+			wantCoTNotContains: []string{"≈"},
+			wantJSONContains: []string{
+				`"reasoning":"Target 70000"`,
+			},
+			wantJSONNotContains: []string{"≈"},
+		},
+		{
+			name:      "ellipsis (should convert to three dots)",
+			cotTrace:  "Analyzing trends…waiting for confirmation…",
+			reasoning: "Setup forming…",
+			wantCoTContains: []string{
+				"Analyzing trends...waiting for confirmation...",
+			},
+			wantCoTNotContains: []string{"…"},
+			wantJSONContains: []string{
+				`"reasoning":"Setup forming..."`,
+			},
+			wantJSONNotContains: []string{"…"},
+		},
+		{
+			name:      "mixed problematic characters",
+			cotTrace:  "BTC ~68500 ±500, ETH ≈3500, waiting…",
+			reasoning: "~255M market cap, ±10% variance, ≈50K target…",
+			wantCoTContains: []string{
+				"BTC 68500 500",
+				"ETH 3500",
+				"waiting...",
+			},
+			wantCoTNotContains: []string{"~", "±", "≈", "…"},
+			wantJSONContains: []string{
+				`255M market cap`,
+				`10% variance`,
+				`50K target...`,
+			},
+			wantJSONNotContains: []string{"~", "±", "≈", "…"},
+		},
+		{
+			name:      "clean text (no sanitization needed)",
+			cotTrace:  "Market cap 255M total, expecting 10% growth",
+			reasoning: "Position size 3500 USD with 5x leverage",
+			wantCoTContains: []string{
+				"Market cap 255M total",
+				"expecting 10% growth",
+			},
+			wantJSONContains: []string{
+				`"reasoning":"Position size 3500 USD with 5x leverage"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock server that returns decisions with problematic characters
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				resp := openclaw.TradingResponse{
+					Decisions: []openclaw.Decision{
+						{
+							Symbol:          "BTCUSDT",
+							Action:          "open_long",
+							Leverage:        5,
+							PositionSizeUSD: 3500,
+							StopLoss:        67800,
+							TakeProfit:      70500,
+							Confidence:      82,
+							Reasoning:       tt.reasoning, // Contains problematic chars
+						},
+					},
+					CoTTrace:  tt.cotTrace, // Contains problematic chars
+					Timestamp: "2026-02-16T17:00:00Z",
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			// Create client
+			client := NewOpenClawClient(
+				WithAPIKey("test-token"),
+				WithBaseURL(server.URL),
+			).(*OpenClawClient)
+
+			// Call
+			result, err := client.call("test system", "test user")
+			if err != nil {
+				t.Fatalf("call() error: %v", err)
+			}
+
+			// Extract reasoning section
+			if reasoningStart := strings.Index(result, "<reasoning>"); reasoningStart >= 0 {
+				reasoningEnd := strings.Index(result, "</reasoning>")
+				reasoningSection := result[reasoningStart:reasoningEnd]
+
+				// Verify CoT contains expected sanitized strings
+				for _, want := range tt.wantCoTContains {
+					if !strings.Contains(reasoningSection, want) {
+						t.Errorf("CoT section should contain %q\nGot: %s", want, reasoningSection)
+					}
+				}
+
+				// Verify CoT does NOT contain problematic characters
+				for _, notWant := range tt.wantCoTNotContains {
+					if strings.Contains(reasoningSection, notWant) {
+						t.Errorf("CoT section should NOT contain %q (should be sanitized)\nGot: %s", notWant, reasoningSection)
+					}
+				}
+			}
+
+			// Extract JSON from <decision> tags
+			decisionStart := strings.Index(result, "<decision>") + len("<decision>")
+			decisionEnd := strings.Index(result, "</decision>")
+			jsonStr := strings.TrimSpace(result[decisionStart:decisionEnd])
+
+			// Verify JSON contains expected sanitized strings
+			for _, want := range tt.wantJSONContains {
+				if !strings.Contains(jsonStr, want) {
+					t.Errorf("JSON should contain %q\nGot: %s", want, jsonStr)
+				}
+			}
+
+			// Verify JSON does NOT contain problematic characters
+			for _, notWant := range tt.wantJSONNotContains {
+				if strings.Contains(jsonStr, notWant) {
+					t.Errorf("JSON should NOT contain %q (should be sanitized)\nGot: %s", notWant, jsonStr)
+				}
+			}
+
+			// Verify JSON is valid
+			var decisions []map[string]interface{}
+			if err := json.Unmarshal([]byte(jsonStr), &decisions); err != nil {
+				t.Fatalf("Failed to parse sanitized JSON: %v\nJSON: %s", err, jsonStr)
+			}
+
+			t.Logf("✅ Sanitized output (no ~, ±, ≈, … characters):\n%s", result)
+		})
+	}
+}
+
+// TestSanitizeForNoFx tests the sanitization function directly
+func TestSanitizeForNoFx(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"~255M total", "255M total"},
+		{"±10% variance", "10% variance"},
+		{"≈50K target", "50K target"},
+		{"waiting…", "waiting..."},
+		{"~255M ±10% ≈50K…", "255M 10% 50K..."},
+		{"clean text", "clean text"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := sanitizeForNoFx(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeForNoFx(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
