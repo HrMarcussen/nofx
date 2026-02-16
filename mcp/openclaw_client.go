@@ -117,8 +117,38 @@ func (c *OpenClawClient) call(systemPrompt, userPrompt string) (string, error) {
 		c.logger.Debugf("[OpenClaw] Leeloo's Chain of Thought:\n%s", resp.CoTTrace)
 	}
 
-	// Convert decisions to JSON array (expected by NoFx)
-	decisionsJSON, err := json.Marshal(resp.Decisions)
+	// Convert openclaw.Decision (camelCase JSON) to kernel-compatible snake_case format.
+	// The kernel expects: position_size_usd, stop_loss, take_profit (snake_case)
+	// but openclaw.Decision marshals to: positionSizeUsd, stopLoss, takeProfit (camelCase).
+	kernelDecisions := make([]map[string]interface{}, 0, len(resp.Decisions))
+	for _, d := range resp.Decisions {
+		kd := map[string]interface{}{
+			"symbol":    d.Symbol,
+			"action":    d.Action,
+			"reasoning": d.Reasoning,
+		}
+		// Always include confidence if non-zero
+		if d.Confidence > 0 {
+			kd["confidence"] = d.Confidence
+		}
+		// Only include position fields for open actions
+		if d.Action == "open_long" || d.Action == "open_short" {
+			if d.Leverage > 0 {
+				kd["leverage"] = d.Leverage
+			}
+			if d.PositionSizeUSD > 0 {
+				kd["position_size_usd"] = d.PositionSizeUSD
+			}
+			if d.StopLoss > 0 {
+				kd["stop_loss"] = d.StopLoss
+			}
+			if d.TakeProfit > 0 {
+				kd["take_profit"] = d.TakeProfit
+			}
+		}
+		kernelDecisions = append(kernelDecisions, kd)
+	}
+	decisionsJSON, err := json.Marshal(kernelDecisions)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal decisions: %w", err)
 	}
@@ -137,7 +167,16 @@ func (c *OpenClawClient) call(systemPrompt, userPrompt string) (string, error) {
 		})
 	}
 
-	return string(decisionsJSON), nil
+	// Wrap in <reasoning> + <decision> tags that the kernel's extractDecisions() expects.
+	// This matches the format returned by all other AI providers.
+	var result string
+	if resp.CoTTrace != "" {
+		result = fmt.Sprintf("<reasoning>\n%s\n</reasoning>\n\n<decision>\n%s\n</decision>", resp.CoTTrace, string(decisionsJSON))
+	} else {
+		result = fmt.Sprintf("<decision>\n%s\n</decision>", string(decisionsJSON))
+	}
+
+	return result, nil
 }
 
 // buildMCPRequestBody - Not used for OpenClaw (override to prevent base implementation)
