@@ -1,4 +1,35 @@
 services:
+  # OpenClaw Trading Adapter (bridges NoFx ↔ OpenClaw AI)
+  nofx-adapter:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile.adapter
+    container_name: nofx-adapter
+    restart: unless-stopped
+    ports:
+      - "${NOFX_ADAPTER_PORT:-8888}:8888"
+    volumes:
+      - ./data/adapter:/app/data/adapter
+    env_file:
+      - .env
+    environment:
+      - PORT=8888
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-http://host.docker.internal:18789}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - OPENCLAW_MODEL=${OPENCLAW_MODEL:-openclaw:opus}
+      - OPENCLAW_SESSION_KEY=${OPENCLAW_SESSION_KEY:-agent:opus:trading-main}
+      - ADAPTER_DATA_DIR=/app/data/adapter
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - nofx-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   # Backend service (API and core logic)
   nofx:
     build:
@@ -6,7 +37,7 @@ services:
       dockerfile: ./docker/Dockerfile.backend
     container_name: nofx-trading
     restart: unless-stopped
-    stop_grace_period: 30s  # 允许应用有 30 秒时间优雅关闭
+    stop_grace_period: 30s
     ports:
       - "${NOFX_BACKEND_PORT:-8080}:8080"
       - "6060:6060"  # pprof profiling
@@ -18,8 +49,12 @@ services:
     environment:
       - TZ=${TZ:-Asia/Shanghai}
       - AI_MAX_TOKENS=8000
+      - OPENCLAW_BASE_URL=http://nofx-adapter:8888
     networks:
       - nofx-network
+    depends_on:
+      nofx-adapter:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
       interval: 30s

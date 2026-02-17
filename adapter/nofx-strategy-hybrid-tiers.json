@@ -1,0 +1,63 @@
+{
+  "name": "Leeloo Hybrid Tiers v1.2",
+  "description": "Adaptive position sizing based on confidence tiers: 72-74% (50% position), ≥75% (100% position). Multi-timeframe (3m+4h) with MACD requirement for moderate confidence trades.",
+  "config": {
+    "language": "en",
+    "coin_source": {
+      "source_type": "mixed",
+      "static_coins": ["BTC", "ETH", "SOL"],
+      "use_ai500": true,
+      "ai500_limit": 10,
+      "use_oi_top": false,
+      "use_oi_low": false,
+      "excluded_coins": []
+    },
+    "indicators": {
+      "klines": {
+        "primary_timeframe": "3m",
+        "primary_count": 30,
+        "longer_timeframe": "4h",
+        "longer_count": 10,
+        "enable_multi_timeframe": true,
+        "selected_timeframes": ["3m", "4h"]
+      },
+      "enable_raw_klines": true,
+      "enable_ema": true,
+      "enable_macd": true,
+      "enable_rsi": true,
+      "enable_atr": true,
+      "enable_boll": false,
+      "enable_volume": true,
+      "enable_oi": true,
+      "enable_funding_rate": true,
+      "ema_periods": [20, 50],
+      "rsi_periods": [14],
+      "atr_periods": [14],
+      "nofxos_api_key": "cm_568c67eae410d912c54c",
+      "enable_quant_data": true,
+      "enable_quant_oi": true,
+      "enable_quant_netflow": true,
+      "enable_oi_ranking": true,
+      "oi_ranking_duration": "1h",
+      "oi_ranking_limit": 10,
+      "enable_netflow_ranking": true,
+      "netflow_ranking_duration": "1h",
+      "netflow_ranking_limit": 10,
+      "enable_price_ranking": true,
+      "price_ranking_duration": "1h,4h",
+      "price_ranking_limit": 10
+    },
+    "risk_control": {
+      "max_positions": 3,
+      "btc_eth_max_leverage": 5,
+      "altcoin_max_leverage": 5,
+      "btc_eth_max_position_value_ratio": 5.0,
+      "altcoin_max_position_value_ratio": 1.0,
+      "max_margin_usage": 0.9,
+      "min_position_size": 12,
+      "min_risk_reward_ratio": 3.0,
+      "min_confidence": 72
+    },
+    "custom_prompt": "## 🎯 HYBRID CONFIDENCE TIERS (CRITICAL - READ CAREFULLY)\n\nYou MUST use adaptive position sizing based on confidence level:\n\n### Confidence Tier Rules:\n\n**Tier 1: High Confidence (≥75%)**\n- Position Size: `(confidence / 100) × maxPositionSize` (full formula)\n- Stop-Loss: ATR × 2.0 (standard)\n- Requirements: Standard entry rules (3+ of 5 signals)\n- Example: 82% confidence, $5000 max → (82/100) × $5000 = $4100 position\n\n**Tier 2: Moderate Confidence (72-74%)**\n- Position Size: `0.5 × (confidence / 100) × maxPositionSize` (50% reduction)\n- Stop-Loss: ATR × 1.5 (tighter)\n- **MANDATORY Requirements:**\n  - BOTH 3m MACD > 0 AND 4h MACD > 0 (no exceptions!)\n  - If 4h EMA bearish (EMA20 < EMA50), gap must be < 1%\n  - RSI not extreme (avoid >75 or <25)\n- Example: 74% confidence, $5000 max → 0.5 × (74/100) × $5000 = $1850 position\n\n**Tier 3: Low Confidence (<72%)**\n- Action: WAIT (no trade)\n\n### Position Sizing Formula (USE EXACT CONFIDENCE!):\n\n```javascript\nif (confidence >= 75) {\n  positionSizeUsd = (confidence / 100) × maxPositionSize\n  stopDistance = ATR × 2.0\n} else if (confidence >= 72) {\n  // Check MACD requirement first\n  if (MACD_3m <= 0 || MACD_4h <= 0) {\n    action = \"wait\"  // Failed MACD requirement\n    reasoning = \"72-74% tier requires BOTH 3m and 4h MACD positive\"\n  } else {\n    positionSizeUsd = 0.5 × (confidence / 100) × maxPositionSize\n    stopDistance = ATR × 1.5\n  }\n} else {\n  action = \"wait\"\n}\n```\n\n### Stop-Loss & Take-Profit Calculation:\n\n```javascript\nstopLoss = entryPrice - stopDistance\ntakeProfit = entryPrice + (stopDistance × minRiskRewardRatio)\n```\n\n### Examples (SHOW YOUR MATH):\n\n**Example 1: ETH @ 74% confidence**\n- Entry: $2680\n- ATR: $40\n- Max Position: $5000\n- MACD 3m: +2.3 ✅\n- MACD 4h: +1.8 ✅\n- **Position Size:** 0.5 × (74/100) × $5000 = $1850\n- **Stop Distance:** $40 × 1.5 = $60\n- **Stop-Loss:** $2680 - $60 = $2620\n- **Take-Profit:** $2680 + ($60 × 3.0) = $2860\n- **Risk/Reward:** $180 / $60 = 3:1 ✅\n\n**Example 2: BTC @ 82% confidence**\n- Entry: $68000\n- ATR: $1200\n- Max Position: $5000\n- **Position Size:** (82/100) × $5000 = $4100\n- **Stop Distance:** $1200 × 2.0 = $2400\n- **Stop-Loss:** $68000 - $2400 = $65600\n- **Take-Profit:** $68000 + ($2400 × 3.0) = $75200\n- **Risk/Reward:** $7200 / $2400 = 3:1 ✅\n\n### ⚠️ CRITICAL REQUIREMENTS:\n\n1. **NEVER use arbitrary percentages** (\"90% for high confidence\")\n2. **ALWAYS use exact confidence value**: `(confidence / 100) × maxPositionSize`\n3. **ALWAYS show your calculations** in reasoning\n4. **For 72-74% tier:** Verify BOTH MACD values in reasoning\n5. **NO THOUSAND SEPARATORS** in JSON numbers (68000 not 68,000)\n\n### Common Mistakes to Avoid:\n\n❌ WRONG: \"High confidence, using 90% of max position → $4500\"\n✅ CORRECT: \"Confidence 82%, position = (82/100) × $5000 = $4100\"\n\n❌ WRONG: \"74% confidence → WAIT (below 75% threshold)\"\n✅ CORRECT: \"74% confidence + MACD 3m/4h positive → 50% position = $1850\"\n\n❌ WRONG: positionSizeUsd: 4,100 (comma in JSON)\n✅ CORRECT: positionSizeUsd: 4100 (no comma)\n\nRemember: The tier system exists to capture marginal opportunities (72-74%) with reduced risk, not to ignore them entirely!"
+  }
+}
