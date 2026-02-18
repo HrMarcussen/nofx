@@ -125,3 +125,6 @@ dmypy.json
 .pyre/
 PR_DESCRIPTION.md
 backtests/
+
+# Credential files
+credentials.txt
