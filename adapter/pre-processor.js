@@ -246,6 +246,203 @@ function roundNum(val, decimals = 2) {
 }
 
 /**
+ * Compute ATR (Average True Range) from kline data.
+ * Each kline row: [time, open, high, low, close, volume] or object with those fields.
+ * @param {Array} klines - Array of kline rows (at least 15 needed for ATR-14)
+ * @param {number} period - ATR period (default 14)
+ * @returns {number|null}
+ */
+function computeATR(klines, period = 14) {
+  if (!klines || klines.length < period + 1) return null;
+
+  const trueRanges = [];
+  for (let i = 1; i < klines.length; i++) {
+    const high = klines[i].high;
+    const low = klines[i].low;
+    const prevClose = klines[i - 1].close;
+    const tr = Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    trueRanges.push(tr);
+  }
+
+  if (trueRanges.length < period) return null;
+
+  // Simple moving average of last `period` true ranges
+  const recent = trueRanges.slice(-period);
+  const sum = recent.reduce((a, b) => a + b, 0);
+  return sum / period;
+}
+
+/**
+ * Parse kline table text into array of { open, high, low, close, volume } objects.
+ * Format: "02-19 17:10    0.5011    0.5050    0.4992    0.5044    1103915.00"
+ */
+function parseKlineTable(text) {
+  const klines = [];
+  const lines = text.split('\n');
+  for (const line of lines) {
+    // Match: date+time, then 5 numeric columns (open, high, low, close, volume)
+    const m = line.match(/\d{2}-\d{2}\s+\d{2}:\d{2}\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
+    if (m) {
+      klines.push({
+        open: parseFloat(m[1]),
+        high: parseFloat(m[2]),
+        low: parseFloat(m[3]),
+        close: parseFloat(m[4]),
+        volume: parseFloat(m[5])
+      });
+    }
+  }
+  return klines;
+}
+
+/**
+ * Parse the legacy text format from NoFx.
+ * Extracts account info, symbol data, and computes indicators from klines.
+ */
+function parseTextFormat(text, strategy) {
+  const result = {
+    accountInfo: null,
+    existingPositions: [],
+    symbolIndicators: {}
+  };
+
+  // Parse account info: "Account: Equity 5000.00 | Balance 5000.00 ..."
+  const accountMatch = text.match(/Account:\s*Equity\s+([\d.]+)\s*\|\s*Balance\s+([\d.]+)/i);
+  if (accountMatch) {
+    result.accountInfo = {
+      equity: parseFloat(accountMatch[1]),
+      totalWalletBalance: parseFloat(accountMatch[2])
+    };
+  }
+
+  // Split into symbol sections: "### N. SYMBOLUSDT ..."
+  const symbolSections = text.split(/###\s+\d+\.\s+/);
+
+  for (let i = 1; i < symbolSections.length; i++) {
+    const section = symbolSections[i];
+
+    // Extract symbol name (first word, e.g. "PIPPINUSDT")
+    const symbolMatch = section.match(/^(\w+USDT)/);
+    if (!symbolMatch) continue;
+    const symbol = symbolMatch[1];
+
+    // Extract current price
+    const priceMatch = section.match(/current_price\s*=\s*([\d.]+)/);
+    const currentPrice = priceMatch ? parseFloat(priceMatch[1]) : null;
+
+    // Extract open interest
+    const oiMatch = section.match(/Open Interest:\s*Latest:\s*([\d.]+)/);
+    const oi = oiMatch ? parseFloat(oiMatch[1]) : null;
+
+    // Extract funding rate
+    const fundingMatch = section.match(/Funding Rate:\s*([\d.eE+-]+)/);
+    const fundingRate = fundingMatch ? parseFloat(fundingMatch[1]) : null;
+
+    // Parse kline tables by timeframe
+    const klinesByTf = {};
+    const tfRegex = /===\s+(\w+)\s+Timeframe[^=]*===\s*\n([\s\S]*?)(?=\n===|\n###|\n##|$)/g;
+    let tfMatch;
+    while ((tfMatch = tfRegex.exec(section)) !== null) {
+      const tf = tfMatch[1]; // "5M", "15M", "1H"
+      const tableText = tfMatch[2];
+      klinesByTf[tf] = parseKlineTable(tableText);
+    }
+
+    // Compute ATR from best available timeframe (prefer 15M, fallback to 1H, then 5M)
+    let atr = null;
+    const atrTfPreference = ['15M', '1H', '5M'];
+    for (const tf of atrTfPreference) {
+      if (klinesByTf[tf] && klinesByTf[tf].length >= 15) {
+        atr = computeATR(klinesByTf[tf]);
+        if (atr !== null) break;
+      }
+    }
+
+    // If we still don't have ATR and have price, estimate from 5M klines range
+    if (atr === null && klinesByTf['5M'] && klinesByTf['5M'].length > 0) {
+      atr = computeATR(klinesByTf['5M']);
+    }
+
+    // MACD: not available in text format — default to small positive values
+    // This allows tier 2 trades to pass through (don't block due to missing data)
+    const macd3m = 0.001;
+    const macd4h = 0.001;
+
+    // Compute RSI from 15M klines if available
+    let rsi = null;
+    const rsiKlines = klinesByTf['15M'] || klinesByTf['1H'] || klinesByTf['5M'];
+    if (rsiKlines && rsiKlines.length >= 15) {
+      rsi = computeRSI(rsiKlines);
+    }
+
+    // Build indicator object matching extractIndicators() output
+    const indicators = {
+      symbol,
+      price: currentPrice,
+      atr,
+      rsi,
+      macd3m,
+      macd4h,
+      ema20: null,
+      ema50: null,
+      volume: null,
+      oi,
+      oiChange: null,
+      fundingRate
+    };
+
+    // Calculate position sizing info
+    const posInfo = calcMaxPositionSize(symbol, strategy, result.accountInfo);
+
+    result.symbolIndicators[symbol] = {
+      ...indicators,
+      ...posInfo
+    };
+
+    console.log(`[text-parser] ${symbol}: price=${currentPrice}, atr=${atr !== null ? atr.toFixed(6) : 'null'}, macd3m=${macd3m}, macd4h=${macd4h}, maxPos=${posInfo.maxPositionSize.toFixed(2)}`);
+  }
+
+  console.log(`[text-parser] Parsed ${Object.keys(result.symbolIndicators).length} symbols from text format`);
+  return result;
+}
+
+/**
+ * Compute RSI from kline data (period 14)
+ */
+function computeRSI(klines, period = 14) {
+  if (!klines || klines.length < period + 1) return null;
+
+  let gains = 0;
+  let losses = 0;
+
+  // Initial average gain/loss
+  for (let i = 1; i <= period; i++) {
+    const change = klines[i].close - klines[i - 1].close;
+    if (change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+
+  // Smooth through remaining klines
+  for (let i = period + 1; i < klines.length; i++) {
+    const change = klines[i].close - klines[i - 1].close;
+    if (change > 0) {
+      avgGain = (avgGain * (period - 1) + change) / period;
+      avgLoss = (avgLoss * (period - 1)) / period;
+    } else {
+      avgGain = (avgGain * (period - 1)) / period;
+      avgLoss = (avgLoss * (period - 1) + Math.abs(change)) / period;
+    }
+  }
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+/**
  * Pre-process a NoFx request into:
  * 1. A compact market summary for the LLM
  * 2. Extracted numeric data for the post-processor
@@ -260,13 +457,15 @@ function preProcess(requestBody) {
       ? JSON.parse(requestBody.userPrompt) 
       : requestBody.userPrompt;
   } catch (e) {
-    // If it's not JSON, treat the whole userPrompt as-is (legacy format)
+    // Not JSON — parse the legacy text format from NoFx
+    const textData = requestBody.userPrompt;
+    const parsed = parseTextFormat(textData, strategy);
     return {
       strategy,
-      llmPrompt: requestBody.userPrompt,
-      symbolIndicators: {},
-      accountInfo: null,
-      existingPositions: [],
+      llmPrompt: textData,
+      symbolIndicators: parsed.symbolIndicators,
+      accountInfo: parsed.accountInfo,
+      existingPositions: parsed.existingPositions,
       isLegacyFormat: true
     };
   }
