@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
- * OpenClaw Trading Decision Adapter (HTTP Edition)
+ * OpenClaw Trading Decision Adapter (HTTP Edition) — v2.0 Refactored
  * 
  * A lightweight HTTP server that bridges NoFx trading bot with OpenClaw/Leeloo.
  * Provides the /api/v1/trading/decision endpoint for NoFx to request trading decisions.
  * 
- * Architecture:
- *   NoFx → HTTP POST → This Adapter → OpenClaw Gateway (HTTP) → Leeloo → Decision → Adapter → NoFx
+ * Architecture (v2):
+ *   NoFx → HTTP POST → Pre-Processor → Compact LLM Prompt → OpenClaw Gateway → 
+ *   LLM (analysis only) → Post-Processor (math/sizing/stops) → Final Decision → NoFx
+ * 
+ * The LLM only does market analysis and returns {action, confidence, reasoning}.
+ * All position sizing, stop-loss, take-profit, tier logic is handled by script.
  * 
  * Usage:
  *   node trading-decision-adapter.js
@@ -22,7 +26,7 @@
  *   ADAPTER_DATA_DIR      - Data directory for logs (default: /app/data/adapter)
  * 
  * Author: Leeloo (OpenClaw Subagent)
- * Date: 2026-02-15 (refactored 2026-02-17)
+ * Date: 2026-02-15 (refactored v2 2026-02-19)
  */
 
 const http = require('http');
@@ -30,6 +34,9 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+
+const { preProcess } = require('./pre-processor');
+const { postProcess } = require('./post-processor');
 
 // Configuration
 const PORT = process.env.PORT || 8888;
@@ -40,7 +47,6 @@ const OPENCLAW_SESSION_KEY = process.env.OPENCLAW_SESSION_KEY || 'agent:opus:tra
 const THINKING_LEVEL = process.env.THINKING_LEVEL || null;
 const TIMEOUT_MS = parseInt(process.env.TIMEOUT_MS, 10) || 120000;
 const ADAPTER_DATA_DIR = process.env.ADAPTER_DATA_DIR || '/app/data/adapter';
-const STRATEGY_FILE = path.join(__dirname, 'nofx-strategy-hybrid-tiers.json');
 
 // Ensure data directories exist
 function ensureDir(dir) {
@@ -85,226 +91,85 @@ if (!OPENCLAW_GATEWAY_TOKEN) {
   process.exit(1);
 }
 
-// Load dynamic strategy configuration
-function loadStrategy() {
-  try {
-    const data = fs.readFileSync(STRATEGY_FILE, 'utf8');
-    const strategy = JSON.parse(data);
-    log('info', 'Strategy loaded', { 
-      name: strategy.name,
-      minConfidence: strategy.config.risk_control.min_confidence
-    });
-    return strategy;
-  } catch (err) {
-    log('error', 'Failed to load strategy file', { 
-      file: STRATEGY_FILE,
-      error: err.message 
-    });
-    throw new Error(`Strategy file not found or invalid: ${err.message}`);
-  }
+/**
+ * Build the simplified LLM prompt.
+ * The LLM only needs to analyze and decide — no formulas, no formatting rules.
+ */
+function buildLlmPrompt(marketSummary, existingPositions) {
+  const hasPositions = existingPositions && existingPositions.length > 0;
+  
+  return `You are a crypto trading analyst. Analyze the market data below and provide trading decisions.
+
+${marketSummary}
+
+For each symbol in the market data, respond with a JSON array. Each entry must have:
+- "symbol": the trading pair (e.g. "BTCUSDT")
+- "action": one of "open_long", "open_short", "close_long", "close_short", "hold", "wait"
+- "confidence": your confidence level 0-100
+- "reasoning": brief explanation of your analysis
+
+${hasPositions ? 'For existing positions, decide whether to hold or close based on current conditions.' : ''}
+
+Consider: trend direction (EMA alignment), momentum (RSI, MACD across timeframes), volatility (ATR), volume, open interest changes, and funding rates.
+
+Respond ONLY with a JSON array, no other text:
+[{"symbol":"...","action":"...","confidence":...,"reasoning":"..."}]`;
 }
 
-// Build trading prompt from NoFx-style strategy config
-function buildTradingPrompt(systemPrompt, userPrompt) {
-  const strategy = loadStrategy();
-  const config = strategy.config;
-  const riskControl = config.risk_control;
-  const customPrompt = config.custom_prompt || '';
+/**
+ * Parse the LLM's simplified response (just a JSON array)
+ */
+function parseLlmResponse(rawResponse) {
+  // Try to extract JSON array from response
+  let text = rawResponse.trim();
   
-  return `You are Leeloo, the AI trading engine for NoFx AI Trading OS.
-
-Your task is to analyze market data and provide trading decisions.
-
-**Trading Strategy: ${strategy.name}**
-${strategy.description}
-
-**Risk Control Parameters (from active strategy):**
-- Max Positions: ${riskControl.max_positions}
-- BTC/ETH Max Leverage: ${riskControl.btc_eth_max_leverage}x
-- Altcoin Max Leverage: ${riskControl.altcoin_max_leverage}x
-- Min Risk/Reward Ratio: ${riskControl.min_risk_reward_ratio}:1
-- Min Confidence: ${riskControl.min_confidence}%
-- Min Position Size: $${riskControl.min_position_size}
-- BTC/ETH Max Position Value Ratio: ${riskControl.btc_eth_max_position_value_ratio}x equity
-- Altcoin Max Position Value Ratio: ${riskControl.altcoin_max_position_value_ratio}x equity
-
-**Custom Strategy Instructions:**
-${customPrompt}
-
-**Market Context (from NoFx):**
-${userPrompt}
-
-**🚨 CRITICAL FORMATTING RULES:**
-
-1. **NO THOUSAND SEPARATORS IN NUMBERS!**
-   - ✅ CORRECT: Price 68169, Stop 67800, Size 3500
-   - ❌ WRONG: Price 68,169, Stop 67,800, Size 3,500
-   - This applies to BOTH reasoning text AND JSON!
-   - Commas in numbers break JSON parsing!
-
-2. **Required Fields for open_long/open_short:**
-   - leverage (integer 1-10)
-   - positionSizeUsd (number, no commas)
-   - stopLoss (price level, no commas)
-   - takeProfit (price level, no commas)
-   - confidence (0-100)
-   - reasoning (string)
-
-3. **Calculate from Strategy Parameters:**
-   Parse userPrompt JSON and use strategy values:
-   - stopLoss = entryPrice ± (ATR × 2.0 for ≥75%, or ATR × 1.5 for 72-74%)
-   - stopDistance = |entryPrice - stopLoss|
-   - takeProfit = entryPrice + (stopDistance × ${riskControl.min_risk_reward_ratio})
-   - **positionSizeUsd = (confidence / 100) × maxPositionSize** ⚠️ USE EXACT CONFIDENCE!
-   - leverage = ${riskControl.btc_eth_max_leverage} for BTC/ETH, ${riskControl.altcoin_max_leverage} for alts
-
-   **Position Size Examples:**
-   - Confidence 82, maxPositionSize 5000 → (82/100) × 5000 = 4100
-   - Confidence 75, maxPositionSize 5000 → (75/100) × 5000 = 3750
-   - Confidence 74 (tier 2), maxPositionSize 5000 → 0.5 × (74/100) × 5000 = 1850
-   - DO NOT use "90% for high confidence" or other arbitrary values!
-
-**Response Format:**
-
-<reasoning>
-Your analysis (use numbers WITHOUT commas!):
-1. Account Status Analysis
-2. Existing Positions Review  
-3. New Opportunities Analysis (check MACD for 72-74% tier!)
-4. Risk Assessment
-5. Final Decisions with calculations shown
-</reasoning>
-
-<decision>
-[
-  {
-    "symbol": "BTCUSDT",
-    "action": "open_long",
-    "leverage": ${riskControl.btc_eth_max_leverage},
-    "positionSizeUsd": 3500,
-    "stopLoss": 67800,
-    "takeProfit": 70500,
-    "confidence": 82,
-    "reasoning": "Multi-timeframe bullish, OI +6.5%, RSI 62, R/R ${riskControl.min_risk_reward_ratio}:1"
-  },
-  {
-    "symbol": "ETHUSDT",
-    "action": "hold",
-    "confidence": 80,
-    "reasoning": "Profitable +2.2%, let it run"
+  // Strip markdown code blocks if present
+  text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  
+  // Try to find JSON array in the response
+  const arrayMatch = text.match(/\[[\s\S]*\]/);
+  if (!arrayMatch) {
+    throw new Error('No JSON array found in LLM response');
   }
-]
-</decision>
-
-**Valid Actions:**
-- "open_long" / "open_short" - Enter position (MUST include leverage, positionSizeUsd, stopLoss, takeProfit)
-- "close_long" / "close_short" - Exit position
-- "hold" - Keep existing position
-- "wait" - No action for this symbol
-
-Provide your analysis and decisions now. Remember: NO COMMAS IN NUMBERS!`;
-}
-
-// Helper: Strip thousand separators from numbers in text
-function stripThousandSeparators(text) {
-  return text.replace(/\b(\d{1,3})(,\d{3})+\b/g, (match) => {
-    return match.replace(/,/g, '');
-  });
-}
-
-// Parse Leeloo's response
-function parseLeelooResponse(rawResponse) {
-  const reasoningMatch = rawResponse.match(/<reasoning>(.*?)<\/reasoning>/s);
-  let cotTrace = reasoningMatch ? reasoningMatch[1].trim() : '';
-  cotTrace = stripThousandSeparators(cotTrace);
-  
-  const decisionMatch = rawResponse.match(/<decision>(.*?)<\/decision>/s);
-  if (!decisionMatch) {
-    throw new Error('No <decision> tag found in Leeloo response');
-  }
-  
-  let decisionJSON = decisionMatch[1].trim();
   
   let decisions;
   try {
-    decisions = JSON.parse(decisionJSON);
+    decisions = JSON.parse(arrayMatch[0]);
   } catch (err) {
-    const cleaned = decisionJSON
-      .replace(/```json\n?/g, '')
-      .replace(/```\n?/g, '')
-      .trim();
-    
+    // Try cleaning thousand separators
+    const cleaned = arrayMatch[0].replace(/\b(\d{1,3})(,\d{3})+\b/g, (match) => match.replace(/,/g, ''));
     try {
       decisions = JSON.parse(cleaned);
     } catch (err2) {
-      const hasSeparators = /\b\d{1,3}(,\d{3})+\b/.test(cleaned);
-      if (hasSeparators) {
-        throw new Error('JSON parsing failed: Found thousand separator commas in numbers (e.g., 68,169). Numbers must not contain commas!');
-      }
-      throw new Error(`JSON parsing failed: ${err2.message}`);
+      throw new Error(`Failed to parse LLM response as JSON: ${err2.message}`);
     }
   }
   
-  log('debug', '🔍 RAW DECISION JSON (before validation)', { 
-    decisionsCount: decisions.length,
-    decisionsJSON: JSON.stringify(decisions, null, 2)
-  });
+  if (!Array.isArray(decisions)) {
+    throw new Error('LLM response is not an array');
+  }
   
-  validateDecisions(decisions);
+  // Basic validation of LLM output
+  const validActions = ['open_long', 'open_short', 'close_long', 'close_short', 'hold', 'wait'];
+  for (const d of decisions) {
+    if (!d.symbol) throw new Error('LLM decision missing symbol');
+    if (!d.action || !validActions.includes(d.action)) {
+      throw new Error(`LLM decision for ${d.symbol}: invalid action "${d.action}"`);
+    }
+    if (d.confidence === undefined || typeof d.confidence !== 'number') {
+      throw new Error(`LLM decision for ${d.symbol}: missing or non-numeric confidence`);
+    }
+    if (!d.reasoning) {
+      d.reasoning = 'No reasoning provided';
+    }
+  }
+  
+  // Extract any non-JSON text as chain-of-thought trace
+  const beforeJson = text.substring(0, text.indexOf(arrayMatch[0])).trim();
+  const afterJson = text.substring(text.indexOf(arrayMatch[0]) + arrayMatch[0].length).trim();
+  const cotTrace = [beforeJson, afterJson].filter(Boolean).join('\n').trim();
   
   return { decisions, cotTrace };
-}
-
-// Validate decision structure
-function validateDecisions(decisions) {
-  if (!Array.isArray(decisions)) {
-    throw new Error('Decisions must be an array');
-  }
-  
-  const validActions = ['open_long', 'open_short', 'close_long', 'close_short', 'hold', 'wait'];
-  
-  decisions.forEach((d, i) => {
-    if (!d.symbol) throw new Error(`Decision ${i}: missing symbol`);
-    if (!d.action) throw new Error(`Decision ${i}: missing action`);
-    if (!validActions.includes(d.action)) {
-      throw new Error(`Decision ${i}: invalid action "${d.action}" (must be one of: ${validActions.join(', ')})`);
-    }
-    if (d.confidence === undefined || d.confidence === null) {
-      throw new Error(`Decision ${i} (${d.symbol}): missing confidence`);
-    }
-    if (!d.reasoning) throw new Error(`Decision ${i} (${d.symbol}): missing reasoning`);
-    
-    if (typeof d.confidence !== 'number' || d.confidence < 0 || d.confidence > 100) {
-      throw new Error(`Decision ${i} (${d.symbol}): invalid confidence ${d.confidence} (must be number 0-100)`);
-    }
-    
-    if (d.action.startsWith('open_')) {
-      if (d.leverage === undefined || d.leverage === null) {
-        throw new Error(`Decision ${i} (${d.symbol}): missing leverage (required for ${d.action})`);
-      }
-      if (typeof d.leverage !== 'number' || d.leverage < 1 || d.leverage > 10) {
-        throw new Error(`Decision ${i} (${d.symbol}): invalid leverage ${d.leverage} (must be 1-10)`);
-      }
-      if (d.positionSizeUsd === undefined || d.positionSizeUsd === null) {
-        throw new Error(`Decision ${i} (${d.symbol}): missing positionSizeUsd (required for ${d.action})`);
-      }
-      if (typeof d.positionSizeUsd !== 'number' || d.positionSizeUsd <= 0) {
-        throw new Error(`Decision ${i} (${d.symbol}): invalid positionSizeUsd ${d.positionSizeUsd} (must be positive number)`);
-      }
-      if (d.stopLoss === undefined || d.stopLoss === null) {
-        throw new Error(`Decision ${i} (${d.symbol}): missing stopLoss (required for ${d.action})`);
-      }
-      if (typeof d.stopLoss !== 'number' || d.stopLoss <= 0) {
-        throw new Error(`Decision ${i} (${d.symbol}): invalid stopLoss ${d.stopLoss} (must be positive number)`);
-      }
-      if (d.takeProfit === undefined || d.takeProfit === null) {
-        throw new Error(`Decision ${i} (${d.symbol}): missing takeProfit (required for ${d.action})`);
-      }
-      if (typeof d.takeProfit !== 'number' || d.takeProfit <= 0) {
-        throw new Error(`Decision ${i} (${d.symbol}): invalid takeProfit ${d.takeProfit} (must be positive number)`);
-      }
-    }
-  });
 }
 
 // Call OpenClaw Gateway via HTTP POST to /v1/responses
@@ -314,10 +179,16 @@ async function askLeeloo(prompt) {
     const isHttps = parsedUrl.protocol === 'https:';
     const httpModule = isHttps ? https : http;
     
-    const requestBody = JSON.stringify({
+    const bodyObj = {
       model: OPENCLAW_MODEL,
       input: prompt
-    });
+    };
+    
+    if (THINKING_LEVEL) {
+      bodyObj.thinking = THINKING_LEVEL;
+    }
+    
+    const requestBody = JSON.stringify(bodyObj);
     
     const options = {
       hostname: parsedUrl.hostname,
@@ -333,33 +204,12 @@ async function askLeeloo(prompt) {
       timeout: TIMEOUT_MS
     };
     
-    if (THINKING_LEVEL) {
-      // Include thinking level in the request body if supported
-      const bodyObj = JSON.parse(requestBody);
-      bodyObj.thinking = THINKING_LEVEL;
-      const updatedBody = JSON.stringify(bodyObj);
-      options.headers['Content-Length'] = Buffer.byteLength(updatedBody);
-      
-      log('debug', 'Calling OpenClaw Gateway (HTTP)', { 
-        url: `${OPENCLAW_GATEWAY_URL}/v1/responses`,
-        model: OPENCLAW_MODEL,
-        session: OPENCLAW_SESSION_KEY,
-        thinkingLevel: THINKING_LEVEL
-      });
-      
-      const req = httpModule.request(options, handleResponse(resolve, reject));
-      req.on('error', (err) => reject(new Error(`Gateway request failed: ${err.message}`)));
-      req.on('timeout', () => { req.destroy(); reject(new Error(`Gateway request timed out after ${TIMEOUT_MS}ms`)); });
-      req.write(updatedBody);
-      req.end();
-      return;
-    }
-    
     log('debug', 'Calling OpenClaw Gateway (HTTP)', { 
       url: `${OPENCLAW_GATEWAY_URL}/v1/responses`,
       model: OPENCLAW_MODEL,
       session: OPENCLAW_SESSION_KEY,
-      thinkingLevel: 'default'
+      thinkingLevel: THINKING_LEVEL || 'default',
+      promptLength: prompt.length
     });
     
     const req = httpModule.request(options, handleResponse(resolve, reject));
@@ -383,10 +233,7 @@ function handleResponse(resolve, reject) {
       try {
         const response = JSON.parse(data);
         
-        // Extract text from OpenResponses format
-        // Response format: {"status":"completed","output":[{"content":[{"text":"..."}]}]}
         if (response.output && Array.isArray(response.output)) {
-          // Find the message output (type === 'message' or has content array)
           for (const outputItem of response.output) {
             if (outputItem.content && Array.isArray(outputItem.content)) {
               for (const contentItem of outputItem.content) {
@@ -414,7 +261,6 @@ async function checkGatewayHealth() {
     const isHttps = parsedUrl.protocol === 'https:';
     const httpModule = isHttps ? https : http;
     
-    // Simple connectivity check - just try to connect
     const options = {
       hostname: parsedUrl.hostname,
       port: parsedUrl.port || (isHttps ? 443 : 80),
@@ -424,7 +270,7 @@ async function checkGatewayHealth() {
     };
     
     const req = httpModule.request(options, (res) => {
-      res.resume(); // drain response
+      res.resume();
       resolve({ connected: true, statusCode: res.statusCode });
     });
     
@@ -456,13 +302,15 @@ async function handleRequest(req, res) {
     return;
   }
   
-  // Health check endpoint (new top-level path)
+  // Health check endpoint
   if (req.method === 'GET' && (req.url === '/health' || req.url === '/api/v1/trading/health')) {
     const gatewayStatus = await checkGatewayHealth();
     const healthy = gatewayStatus.connected;
     
     const health = {
       status: healthy ? 'healthy' : 'degraded',
+      version: '2.0',
+      architecture: 'pre-process → LLM (analysis) → post-process (math)',
       session: OPENCLAW_SESSION_KEY,
       model: OPENCLAW_MODEL,
       gateway: {
@@ -487,46 +335,105 @@ async function handleRequest(req, res) {
       req.on('end', async () => {
         try {
           const request = JSON.parse(body);
-          const { systemPrompt, userPrompt, metadata } = request;
+          const { metadata } = request;
           
-          log('info', 'Trading decision requested', { 
+          log('info', '📥 Trading decision requested', { 
             requestId: metadata?.requestId,
             exchange: metadata?.exchange,
             symbols: metadata?.symbols
           });
           
-          if (!systemPrompt || !userPrompt) {
-            throw new Error('Missing systemPrompt or userPrompt');
+          if (!request.userPrompt) {
+            throw new Error('Missing userPrompt');
           }
           
-          const leelooPrompt = buildTradingPrompt(systemPrompt, userPrompt);
-          const rawResponse = await askLeeloo(leelooPrompt);
-          const { decisions, cotTrace } = parseLeelooResponse(rawResponse);
+          // === PHASE 1: PRE-PROCESS ===
+          const preStart = Date.now();
+          const preprocessed = preProcess(request);
+          const preTimeMs = Date.now() - preStart;
+          
+          log('info', '🔧 Pre-processing complete', {
+            isLegacy: preprocessed.isLegacyFormat,
+            symbolCount: Object.keys(preprocessed.symbolIndicators).length,
+            symbols: Object.keys(preprocessed.symbolIndicators),
+            promptLength: preprocessed.llmPrompt.length,
+            preProcessMs: preTimeMs
+          });
+          
+          // === PHASE 2: LLM ANALYSIS ===
+          const llmPrompt = buildLlmPrompt(
+            preprocessed.llmPrompt,
+            preprocessed.existingPositions
+          );
+          
+          log('info', '🤖 Sending to LLM', { 
+            promptChars: llmPrompt.length,
+            promptTokensEstimate: Math.round(llmPrompt.length / 4)
+          });
+          
+          const llmStart = Date.now();
+          const rawResponse = await askLeeloo(llmPrompt);
+          const llmTimeMs = Date.now() - llmStart;
+          
+          const { decisions: llmDecisions, cotTrace } = parseLlmResponse(rawResponse);
+          
+          log('info', '🤖 LLM response received', {
+            decisionsCount: llmDecisions.length,
+            llmTimeMs,
+            decisions: llmDecisions.map(d => ({ symbol: d.symbol, action: d.action, confidence: d.confidence }))
+          });
+          
+          // === PHASE 3: POST-PROCESS ===
+          const postStart = Date.now();
+          const finalDecisions = postProcess(
+            llmDecisions,
+            preprocessed.symbolIndicators,
+            preprocessed.strategy
+          );
+          const postTimeMs = Date.now() - postStart;
+          
+          log('info', '📊 Post-processing complete', {
+            postProcessMs: postTimeMs,
+            decisions: finalDecisions.map(d => ({
+              symbol: d.symbol,
+              action: d.action,
+              confidence: d.confidence,
+              positionSizeUsd: d.positionSizeUsd,
+              leverage: d.leverage,
+              stopLoss: d.stopLoss,
+              takeProfit: d.takeProfit
+            }))
+          });
           
           const processingTime = Date.now() - startTime;
           
           const response = {
-            decisions,
+            decisions: finalDecisions,
             cotTrace,
             timestamp: new Date().toISOString(),
-            processingTimeMs: processingTime
+            processingTimeMs: processingTime,
+            timing: {
+              preProcessMs: preTimeMs,
+              llmMs: llmTimeMs,
+              postProcessMs: postTimeMs
+            }
           };
           
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(response, null, 2));
           
-          log('info', 'Trading decision completed', {
+          log('info', '✅ Trading decision completed', {
             requestId: metadata?.requestId,
-            decisionsCount: decisions.length,
+            decisionsCount: finalDecisions.length,
             processingTimeMs: processingTime
           });
           
-          logDecisions(metadata?.requestId, decisions, cotTrace, processingTime);
+          logDecisions(metadata?.requestId, finalDecisions, cotTrace, processingTime);
           
         } catch (err) {
           const processingTime = Date.now() - startTime;
           
-          log('error', 'Request processing failed', {
+          log('error', '❌ Request processing failed', {
             error: err.message,
             stack: err.stack,
             processingTimeMs: processingTime
@@ -602,7 +509,7 @@ ${cotTrace}
 const server = http.createServer(handleRequest);
 
 server.listen(PORT, '0.0.0.0', () => {
-  log('info', `Trading Decision Adapter started`, {
+  log('info', `Trading Decision Adapter v2.0 started`, {
     port: PORT,
     session: OPENCLAW_SESSION_KEY,
     model: OPENCLAW_MODEL,
@@ -613,7 +520,8 @@ server.listen(PORT, '0.0.0.0', () => {
   
   console.log('');
   console.log('='.repeat(70));
-  console.log('  OpenClaw Trading Decision Adapter (HTTP Edition)');
+  console.log('  OpenClaw Trading Decision Adapter v2.0 (Refactored)');
+  console.log('  Pre-Process → LLM (analysis) → Post-Process (math)');
   console.log('='.repeat(70));
   console.log('');
   console.log(`  Listening on:    http://0.0.0.0:${PORT}`);
