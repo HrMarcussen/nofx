@@ -7,7 +7,7 @@
  */
 
 const { preProcess, loadStrategy } = require('./pre-processor');
-const { postProcess, determineTier, checkTier2Macd, calcPositionSize, calcStopDistance } = require('./post-processor');
+const { postProcess, determineTier, checkTier2Macd, calcPositionSize, calcStopDistance, calcFeeImpact } = require('./post-processor');
 const fs = require('fs');
 const path = require('path');
 
@@ -332,6 +332,70 @@ const manyDecisions = postProcess(
 );
 const openCount = manyDecisions.filter(d => d.action.startsWith('open_')).length;
 assert(openCount <= 3, `Max positions enforced: ${openCount} open actions`, `got ${openCount}`);
+
+// ---------- Test 10: Fee Impact Calculation ----------
+section('TEST 10: Fee Impact Calculation');
+
+// Example from spec: $1850 position, taker fees
+const feeResult1 = calcFeeImpact(
+  { positionSizeUsd: 1850, entryPrice: 2680, takeProfit: 2860, action: 'open_long' },
+  { maker_rate: 0.0002, taker_rate: 0.0004, assume_taker: true, safety_multiplier: 2.0 }
+);
+assert(feeResult1.estimatedFees === 1.48, 'Fee calc: $1850 position → $1.48 round-trip fees', `got $${feeResult1.estimatedFees}`);
+assert(feeResult1.feeCheck === 'passed', 'Fee calc: $1850 long 2680→2860 passes fee check', `got ${feeResult1.feeCheck}`);
+assert(feeResult1.profitAfterFees > 0, 'Fee calc: profit after fees is positive', `got $${feeResult1.profitAfterFees}`);
+
+// Tight TP that should get rejected: small move relative to fees
+const feeResult2 = calcFeeImpact(
+  { positionSizeUsd: 50, entryPrice: 68000, takeProfit: 68050, action: 'open_long' },
+  { maker_rate: 0.0002, taker_rate: 0.0004, assume_taker: true, safety_multiplier: 2.0 }
+);
+// fees = 50 * 0.0004 * 2 = $0.04, profit = (50/68000)*50 = $0.037, threshold = $0.08
+assert(feeResult2.feeCheck === 'rejected', 'Fee calc: tiny position + tight TP → rejected', `got ${feeResult2.feeCheck}`);
+
+// Maker rate (more lenient)
+const feeResult3 = calcFeeImpact(
+  { positionSizeUsd: 4100, entryPrice: 68000, takeProfit: 75200, action: 'open_long' },
+  { maker_rate: 0.0002, taker_rate: 0.0004, assume_taker: false, safety_multiplier: 2.0 }
+);
+assert(feeResult3.estimatedFees === 1.64, 'Fee calc: maker rate $4100 → $1.64 fees', `got $${feeResult3.estimatedFees}`);
+assert(feeResult3.feeCheck === 'passed', 'Fee calc: large position + wide TP with maker → passed', `got ${feeResult3.feeCheck}`);
+
+// ---------- Test 11: Fee Rejection in Full Pipeline ----------
+section('TEST 11: Fee Rejection in Post-Processing Pipeline');
+
+// Craft a scenario where fees eat the profit: small position, very tight ATR
+const feeRejectDecision = postProcess(
+  [{ symbol: 'BTCUSDT', action: 'open_long', confidence: 75, reasoning: 'Test fee rejection' }],
+  { 'BTCUSDT': { price: 68000, atr: 0.5, macd3m: 1, macd4h: 1, maxPositionSize: 100, maxLeverage: 5 } },
+  strategy
+);
+// positionSize = 75/100 * 100 = $75, stopDist = 0.5*2 = 1, TP = 68000 + 1*3 = 68003
+// expectedProfit = (3/68000)*75 = $0.0033, fees = 75*0.0004*2 = $0.06, threshold = $0.12
+assert(feeRejectDecision[0].action === 'wait', 'Pipeline: tiny ATR + small position → fee rejection → wait', `got ${feeRejectDecision[0].action}`);
+assert(feeRejectDecision[0].feeCheck === 'rejected', 'Pipeline: feeCheck = rejected on output', `got ${feeRejectDecision[0].feeCheck}`);
+assert(feeRejectDecision[0].reasoning.includes('Fee check failed'), 'Pipeline: reasoning explains fee rejection');
+
+// Normal trade should pass fees and include fee info
+const feePassDecision = postProcess(
+  [{ symbol: 'BTCUSDT', action: 'open_long', confidence: 82, reasoning: 'Test fee pass' }],
+  { 'BTCUSDT': { price: 68000, atr: 1200, macd3m: 1, macd4h: 1, maxPositionSize: 5000, maxLeverage: 5 } },
+  strategy
+);
+assert(feePassDecision[0].action === 'open_long', 'Pipeline: normal BTC trade passes fee check');
+assert(feePassDecision[0].feeCheck === 'passed', 'Pipeline: feeCheck = passed on output', `got ${feePassDecision[0].feeCheck}`);
+assert(typeof feePassDecision[0].estimatedFees === 'number', 'Pipeline: estimatedFees included in output');
+assert(typeof feePassDecision[0].profitAfterFees === 'number', 'Pipeline: profitAfterFees included in output');
+assert(feePassDecision[0].profitAfterFees > 0, 'Pipeline: profit after fees is positive', `got $${feePassDecision[0].profitAfterFees}`);
+
+// Short trade fee check
+const feeShortDecision = postProcess(
+  [{ symbol: 'ETHUSDT', action: 'open_short', confidence: 80, reasoning: 'Test short fee pass' }],
+  { 'ETHUSDT': { price: 2680, atr: 40, macd3m: -1, macd4h: -1, maxPositionSize: 5000, maxLeverage: 5 } },
+  strategy
+);
+assert(feeShortDecision[0].action === 'open_short', 'Pipeline: ETH short passes fee check');
+assert(feeShortDecision[0].feeCheck === 'passed', 'Pipeline: short feeCheck = passed');
 
 // ========== Summary ==========
 section('SUMMARY');

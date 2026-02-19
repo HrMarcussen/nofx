@@ -95,6 +95,41 @@ function calcTakeProfit(entryPrice, stopDistance, minRiskRewardRatio, action) {
 }
 
 /**
+ * Calculate fee details for a trade and check profitability after fees.
+ * 
+ * @param {Object} params - { positionSizeUsd, entryPrice, takeProfit, action }
+ * @param {Object} feeConfig - { maker_rate, taker_rate, assume_taker, safety_multiplier }
+ * @returns {Object} { estimatedFees, expectedProfit, profitAfterFees, feeCheck, reason }
+ */
+function calcFeeImpact({ positionSizeUsd, entryPrice, takeProfit, action }, feeConfig) {
+  const feeRate = feeConfig.assume_taker ? feeConfig.taker_rate : feeConfig.maker_rate;
+  const safetyMultiplier = feeConfig.safety_multiplier || 2.0;
+
+  // Round-trip fees: entry + exit
+  const estimatedFees = positionSizeUsd * feeRate * 2;
+
+  // Expected profit at take-profit
+  const priceMove = Math.abs(takeProfit - entryPrice);
+  const expectedProfit = (priceMove / entryPrice) * positionSizeUsd;
+
+  const profitAfterFees = expectedProfit - estimatedFees;
+  const minProfitThreshold = estimatedFees * safetyMultiplier;
+
+  const feeCheck = expectedProfit >= minProfitThreshold ? 'passed' : 'rejected';
+
+  const result = { estimatedFees: roundNum(estimatedFees), expectedProfit: roundNum(expectedProfit), profitAfterFees: roundNum(profitAfterFees), feeCheck };
+
+  if (feeCheck === 'rejected') {
+    result.reason = `Expected profit $${expectedProfit.toFixed(2)} < minimum threshold $${minProfitThreshold.toFixed(2)} (fees $${estimatedFees.toFixed(2)} × ${safetyMultiplier} safety)`;
+  }
+
+  // Debug logging
+  console.log(`[fees] position=$${positionSizeUsd.toFixed(2)} rate=${feeRate} roundTrip=$${estimatedFees.toFixed(2)} expectedProfit=$${expectedProfit.toFixed(2)} threshold=$${minProfitThreshold.toFixed(2)} → ${feeCheck}`);
+
+  return result;
+}
+
+/**
  * Validate a fully-built decision
  * Returns { valid: true } or { valid: false, reason: '...' }
  */
@@ -234,6 +269,25 @@ function processDecision(llmDecision, indicators, strategy) {
     takeProfit = llmDecision.takeProfit || null;
   }
 
+  // Fee-aware profitability check
+  const feeConfig = strategy.config.fees;
+  let feeInfo = null;
+  if (feeConfig && entryPrice && takeProfit) {
+    feeInfo = calcFeeImpact({ positionSizeUsd, entryPrice, takeProfit, action }, feeConfig);
+    if (feeInfo.feeCheck === 'rejected') {
+      return {
+        symbol,
+        action: 'wait',
+        confidence: Number(confidence),
+        reasoning: `${reasoning} [Post-processor: Fee check failed — ${feeInfo.reason} — converted to wait]`,
+        estimatedFees: feeInfo.estimatedFees,
+        expectedProfit: feeInfo.expectedProfit,
+        profitAfterFees: feeInfo.profitAfterFees,
+        feeCheck: 'rejected'
+      };
+    }
+  }
+
   // Build decision
   const decision = {
     symbol,
@@ -247,6 +301,14 @@ function processDecision(llmDecision, indicators, strategy) {
     _entryPrice: entryPrice, // internal, for validation
     _tier: tier
   };
+
+  // Add fee transparency to passing trades
+  if (feeInfo) {
+    decision.estimatedFees = feeInfo.estimatedFees;
+    decision.expectedProfit = feeInfo.expectedProfit;
+    decision.profitAfterFees = feeInfo.profitAfterFees;
+    decision.feeCheck = feeInfo.feeCheck;
+  }
 
   // Validate
   const validation = validateDecision(decision, strategy);
@@ -313,5 +375,6 @@ module.exports = {
   calcStopDistance,
   calcStopLoss,
   calcTakeProfit,
+  calcFeeImpact,
   validateDecision
 };

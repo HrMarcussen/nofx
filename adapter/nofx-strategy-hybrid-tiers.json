@@ -47,6 +47,12 @@
       "price_ranking_duration": "1h,4h",
       "price_ranking_limit": 10
     },
+    "fees": {
+      "maker_rate": 0.0002,
+      "taker_rate": 0.0004,
+      "assume_taker": true,
+      "safety_multiplier": 2.0
+    },
     "risk_control": {
       "max_positions": 3,
       "btc_eth_max_leverage": 5,
