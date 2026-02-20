@@ -1,0 +1,27 @@
+{
+  "name": "nofx-adapter-v2",
+  "version": "2.0.0-alpha",
+  "description": "Trading Adapter V2 - Rule Engine MVP (90% autonomous, 10% LLM escalation)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node test/signal-condenser.test.js && node test/rule-engine.test.js && node test/position-sizer.test.js",
+    "test:signal": "node test/signal-condenser.test.js",
+    "test:rules": "node test/rule-engine.test.js",
+    "test:position": "node test/position-sizer.test.js"
+  },
+  "keywords": [
+    "trading",
+    "crypto",
+    "rule-engine",
+    "binance",
+    "ai"
+  ],
+  "author": "OpenClaw Subagent",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

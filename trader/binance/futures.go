@@ -63,8 +63,13 @@ type FuturesTrader struct {
 }
 
 // NewFuturesTrader creates futures trader
-func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
+// If testnet is true, the client will connect to Binance Futures testnet instead of production
+func NewFuturesTrader(apiKey, secretKey string, userId string, testnet bool) *FuturesTrader {
 	client := futures.NewClient(apiKey, secretKey)
+	if testnet {
+		client.SetApiEndpoint("https://testnet.binancefuture.com")
+		logger.Infof("🧪 Binance Futures TESTNET mode enabled (endpoint: testnet.binancefuture.com)")
+	}
 
 	hookRes := hook.HookExec[hook.NewBinanceTraderResult](hook.NEW_BINANCE_TRADER, userId, client)
 	if hookRes != nil && hookRes.GetResult() != nil {

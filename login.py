@@ -14,6 +14,26 @@ import base64
 import hashlib
 import requests
 
+
+def _load_env(path="/home/thomas/projects/nofx/.env"):
+    """Load environment variables from .env file if not already set."""
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, _, value = line.partition('=')
+                    key = key.strip()
+                    value = value.strip()
+                    # Only set if not already in environment
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+    except FileNotFoundError:
+        pass  # .env is optional
+
+
+_load_env()
+
 # Configuration
 API_BASE_URL = "http://localhost:8080/api"
 EMAIL = "thomas@marcussens.email"
